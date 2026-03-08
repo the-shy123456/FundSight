@@ -1,0 +1,272 @@
+﻿from __future__ import annotations
+
+from collections import defaultdict
+
+from .analytics import build_diagnosis
+from .holdings import HoldingLot, get_holdings, parse_holdings_payload, resolve_fund
+from .intraday_estimator import estimate_fund_intraday
+from .models import FundProfile
+from .sample_data import FUNDS
+
+
+def find_fund(fund_id: str, funds: tuple[FundProfile, ...] = FUNDS) -> FundProfile | None:
+    return resolve_fund(fund_id, funds)
+
+
+def _is_fund_tuple(value: object) -> bool:
+    return isinstance(value, tuple) and all(isinstance(item, FundProfile) for item in value)
+
+
+def _is_holding_tuple(value: object) -> bool:
+    return isinstance(value, tuple) and all(isinstance(item, HoldingLot) for item in value)
+
+
+def _resolve_inputs(primary: object | None, secondary: object | None) -> tuple[tuple[FundProfile, ...], tuple[HoldingLot, ...]]:
+    if _is_fund_tuple(primary):
+        funds = primary
+        if secondary is None:
+            return funds, get_holdings()
+        if _is_holding_tuple(secondary):
+            return funds, secondary
+        return funds, parse_holdings_payload(secondary, funds)
+
+    if primary is None:
+        return FUNDS, get_holdings()
+    if _is_holding_tuple(primary):
+        return FUNDS, primary
+    return FUNDS, parse_holdings_payload(primary, FUNDS)
+
+
+def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict[str, object]:
+    fund = resolve_fund(holding.fund_id, funds)
+    if fund is None:
+        raise ValueError(f"基金不存在：{holding.fund_id}")
+
+    diagnosis = build_diagnosis(fund)
+    estimate = estimate_fund_intraday(fund)
+    latest_nav = round(float(fund.nav_history[-1]), 4)
+    previous_value = holding.shares * latest_nav
+    cost_basis = holding.shares * holding.unit_cost
+    current_value = holding.shares * float(estimate["estimated_nav"])
+    today_estimated_pnl = current_value - previous_value
+    total_pnl = current_value - cost_basis
+    total_return = total_pnl / cost_basis if cost_basis else 0.0
+
+    return {
+        "fund_id": fund.fund_id,
+        "name": fund.name,
+        "category": fund.category,
+        "theme": fund.theme,
+        "risk_level": fund.risk_level,
+        "risk_label": diagnosis["risk_label"],
+        "holding": {
+            "shares": round(holding.shares, 4),
+            "cost_nav": round(holding.unit_cost, 4),
+            "unit_cost": round(holding.unit_cost, 4),
+            "cost_basis": round(cost_basis, 2),
+        },
+        "valuation": {
+            "latest_nav": latest_nav,
+            "estimated_nav": round(float(estimate["estimated_nav"]), 4),
+            "current_value": round(current_value, 2),
+            "today_profit": round(today_estimated_pnl, 2),
+            "today_return": round(float(estimate["estimated_return"]), 4),
+            "total_profit": round(total_pnl, 2),
+            "total_return": round(total_return, 4),
+        },
+        "shares": round(holding.shares, 4),
+        "avg_cost": round(holding.unit_cost, 4),
+        "unit_cost": round(holding.unit_cost, 4),
+        "cost_basis": round(cost_basis, 2),
+        "latest_nav": latest_nav,
+        "estimated_nav": round(float(estimate["estimated_nav"]), 4),
+        "current_value": round(current_value, 2),
+        "market_value": round(current_value, 2),
+        "today_estimated_pnl": round(today_estimated_pnl, 2),
+        "estimated_today_pnl": round(today_estimated_pnl, 2),
+        "today_estimated_return": round(float(estimate["estimated_return"]), 4),
+        "estimated_today_return": round(float(estimate["estimated_return"]), 4),
+        "total_pnl": round(total_pnl, 2),
+        "total_profit": round(total_pnl, 2),
+        "total_return": round(total_return, 4),
+        "quality_score": diagnosis["quality_score"],
+        "confidence": estimate["confidence"],
+        "confidence_label": estimate["confidence_label"],
+        "proxy": estimate["contributions"][0]["name"],
+        "proxy_note": estimate["proxy_note"],
+        "signal": {"label": estimate["confidence_label"], "reason": (diagnosis["strengths"][0] if diagnosis["strengths"] else diagnosis["cautions"][0])},
+        "strengths": diagnosis["strengths"],
+        "cautions": diagnosis["cautions"],
+    }
+
+
+def _positions(holdings: tuple[HoldingLot, ...], funds: tuple[FundProfile, ...]) -> list[dict[str, object]]:
+    positions = [_build_position(holding, funds) for holding in holdings]
+    return sorted(positions, key=lambda item: float(item["current_value"]), reverse=True)
+
+
+def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = None) -> dict[str, object]:
+    funds, active_holdings = _resolve_inputs(primary, holdings)
+    positions = _positions(active_holdings, funds)
+    if not positions:
+        return {
+            "mode_label": "场内穿透估算",
+            "as_of": __import__("datetime").datetime.now().strftime("%H:%M"),
+            "summary": {
+                "holding_count": 0,
+                "total_cost": 0.0,
+                "current_value": 0.0,
+                "market_value": 0.0,
+                "today_estimated_pnl": 0.0,
+                "today_profit": 0.0,
+                "estimated_today_return": 0.0,
+                "today_return": 0.0,
+                "total_pnl": 0.0,
+                "total_profit": 0.0,
+                "total_return": 0.0,
+                "highest_exposure": None,
+            },
+            "positions": [],
+            "items": [],
+            "exposures": [],
+            "risk_exposures": [],
+            "signals": [],
+            "disclaimer": "暂无持仓，可先导入样例仓位。",
+        }
+
+    total_cost = sum(float(item["cost_basis"]) for item in positions)
+    current_value = sum(float(item["current_value"]) for item in positions)
+    previous_value = sum(float(item["shares"]) * float(item["latest_nav"]) for item in positions)
+    today_estimated_pnl = sum(float(item["today_estimated_pnl"]) for item in positions)
+    total_pnl = sum(float(item["total_pnl"]) for item in positions)
+    today_estimated_return = today_estimated_pnl / previous_value if previous_value else 0.0
+    total_return = total_pnl / total_cost if total_cost else 0.0
+
+    exposure_map: dict[str, float] = defaultdict(float)
+    for item in positions:
+        exposure_map[str(item["theme"])] += float(item["current_value"])
+
+    exposures = [
+        {
+            "theme": theme,
+            "weight": round(value / current_value, 4) if current_value else 0.0,
+            "current_value": round(value, 2),
+            "market_value": round(value, 2),
+        }
+        for theme, value in sorted(exposure_map.items(), key=lambda entry: entry[1], reverse=True)
+    ]
+    highest_exposure = exposures[0]
+
+    best_position = max(positions, key=lambda item: float(item["today_estimated_pnl"]))
+    riskiest_position = max(positions, key=lambda item: abs(float(item["today_estimated_return"])))
+    signals = [
+        f"当前仓位最多集中在 {highest_exposure['theme']}，权重约 {highest_exposure['weight'] * 100:.1f}%。",
+        f"盘中估算贡献最高的是 {best_position['name']}，今日参考收益 {best_position['today_estimated_pnl']:.2f} 元。",
+        f"波动最明显的是 {riskiest_position['name']}，建议结合置信度 {riskiest_position['confidence_label']} 观察。",
+    ]
+
+    summary = {
+        "holding_count": len(positions),
+        "lot_count": len(active_holdings),
+        "total_cost": round(total_cost, 2),
+        "current_value": round(current_value, 2),
+        "market_value": round(current_value, 2),
+        "today_estimated_pnl": round(today_estimated_pnl, 2),
+        "estimated_today_pnl": round(today_estimated_pnl, 2),
+        "today_profit": round(today_estimated_pnl, 2),
+        "estimated_today_return": round(today_estimated_return, 4),
+        "today_return": round(today_estimated_return, 4),
+        "total_pnl": round(total_pnl, 2),
+        "total_profit": round(total_pnl, 2),
+        "total_return": round(total_return, 4),
+        "highest_exposure": highest_exposure,
+    }
+
+    return {
+        "mode_label": "场内穿透估算",
+        "as_of": __import__("datetime").datetime.now().strftime("%H:%M"),
+        "summary": summary,
+        "positions": positions,
+        "items": positions,
+        "exposures": exposures,
+        "risk_exposures": exposures,
+        "signals": signals,
+        "disclaimer": "组合收益为样例级盘中代理估算，适合做方向参考，不替代基金公司官方净值。",
+    }
+
+
+def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = None) -> dict[str, object]:
+    funds, active_holdings = _resolve_inputs(primary, holdings)
+    labels: list[str] = []
+    pnl_series: list[float] = []
+    contributions: list[dict[str, object]] = []
+    previous_total = 0.0
+    base_values: dict[str, float] = {}
+
+    for holding in active_holdings:
+        fund = resolve_fund(holding.fund_id, funds)
+        if fund is None:
+            continue
+
+        estimate = estimate_fund_intraday(fund)
+        previous_value = holding.shares * float(fund.nav_history[-1])
+        previous_total += previous_value
+        base_values[fund.fund_id] = previous_value
+
+        if not labels:
+            labels = list(estimate["labels"])
+            pnl_series = [0.0 for _ in labels]
+
+        for index, estimated_return in enumerate(estimate["estimated_return_series"]):
+            pnl_series[index] += previous_value * float(estimated_return)
+
+        contributions.append(
+            {
+                "fund_id": fund.fund_id,
+                "name": fund.name,
+                "theme": fund.theme,
+                "today_estimated_pnl": round(previous_value * float(estimate["estimated_return"]), 2),
+                "confidence_label": estimate["confidence_label"],
+                "weight": 0.0,
+            }
+        )
+
+    for item in contributions:
+        item["weight"] = round(base_values.get(str(item["fund_id"]), 0.0) / previous_total, 4) if previous_total else 0.0
+
+    return_series = [round(value / previous_total, 4) if previous_total else 0.0 for value in pnl_series]
+    chart = {
+        "labels": labels,
+        "series": [
+            {"name": "组合盘中估算收益率", "values": return_series},
+            {"name": "昨日净值基准", "values": [0.0 for _ in labels]},
+        ],
+        "unit": "return",
+    }
+
+    return {
+        "chart": chart,
+        "labels": labels,
+        "series": chart["series"],
+        "estimated_pnl_series": [round(value, 2) for value in pnl_series],
+        "estimated_return_series": return_series,
+        "contributions": sorted(contributions, key=lambda item: abs(float(item["today_estimated_pnl"])), reverse=True),
+        "disclaimer": "组合盘中曲线由各持仓主题代理叠加生成，仅用于 MVP 演示。",
+    }
+
+
+def find_position(fund_id: str, primary: object = FUNDS, holdings: object | None = None) -> dict[str, object] | None:
+    snapshot = build_portfolio_snapshot(primary, holdings)
+    return next((item for item in snapshot["positions"] if item["fund_id"] == fund_id), None)
+
+
+def build_portfolio_answer(
+    funds: tuple[FundProfile, ...],
+    holdings: object,
+    question: str,
+    fund_id: str | None = None,
+    cash_available: float | None = None,
+) -> dict[str, object]:
+    from .assistant import ask_portfolio_assistant
+
+    return ask_portfolio_assistant(funds, question, fund_id, cash_available, holdings)

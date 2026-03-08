@@ -1,0 +1,258 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>基金持仓预测台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260308-onepage" />
+  </head>
+  <body class="app-body">
+    <div class="app-frame">
+      <aside class="sidebar-shell">
+        <div class="brand-card">
+          <div class="brand-mark">FF</div>
+          <div class="brand-copy">
+            <p class="eyebrow">Fund Forecast</p>
+            <h1>基金持仓预测台</h1>
+            <p>一个围绕真实基金持仓、收益追踪、OCR 导入和 AI 判断的一体化桌面工作台。</p>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="页面导航">
+          <button class="nav-link is-active" data-view="overview">持仓总览</button>
+          <button class="nav-link" data-view="import">导入与录入</button>
+          <button class="nav-link" data-view="library">基金库</button>
+          <button class="nav-link" data-view="assistant">AI 助手</button>
+        </nav>
+
+        <div class="sidebar-meta surface-panel">
+          <span class="meta-label">系统时间</span>
+          <strong id="sidebar-time">加载中</strong>
+          <p id="sidebar-note">真实基金估值优先，截图 OCR 与手动录入可直接进入总览。</p>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="hero-shell surface-panel">
+          <div class="hero-copy">
+            <p class="page-kicker">Portfolio Workspace</p>
+            <h2 id="page-title">持仓总览</h2>
+            <p id="page-subtitle">把导入、录入、基金库和 AI 助手全部收在同一页面里，减少来回跳转。</p>
+          </div>
+          <div class="hero-actions">
+            <button class="hero-action" data-view-jump="import">导入持仓</button>
+            <button class="hero-action" data-view-jump="library">浏览基金库</button>
+            <button class="hero-action primary" data-view-jump="assistant">打开 AI 助手</button>
+          </div>
+        </header>
+
+        <section id="overview-section" class="page-section">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Overview</p>
+              <h3>持仓总览</h3>
+            </div>
+          </div>
+
+          <div class="kpi-grid">
+            <article class="kpi-card highlight-card">
+              <span class="kpi-label">账户资产</span>
+              <strong id="account-asset">--</strong>
+              <p id="asset-note">同步持仓后自动刷新</p>
+            </article>
+            <article class="kpi-card profit-card">
+              <span class="kpi-label">当日总收益</span>
+              <strong id="today-profit">--</strong>
+              <p id="profit-note">真实基金估值优先</p>
+            </article>
+            <article class="kpi-card">
+              <span class="kpi-label">工作流</span>
+              <strong>导入 → 核对 → 分析</strong>
+              <p>截图 OCR、手动录入、基金搜索和 AI 建议全部在当前页面完成。</p>
+            </article>
+            <article class="kpi-card">
+              <span class="kpi-label">当前模式</span>
+              <strong>单页桌面工作台</strong>
+              <p>更像新的网页项目，而不是手机页面复刻。</p>
+            </article>
+          </div>
+
+          <div class="overview-layout">
+            <section class="surface-panel holdings-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">Portfolio Table</p>
+                  <h4>持仓列表</h4>
+                </div>
+                <div class="inline-actions">
+                  <button class="ghost-button" data-view-jump="import">导入持仓</button>
+                  <button class="ghost-button" data-view-jump="assistant">分析助手</button>
+                </div>
+              </div>
+              <div class="holding-table table-head">
+                <div>持有基金</div>
+                <div>当日收益</div>
+                <div>关联板块</div>
+                <div>持有收益</div>
+              </div>
+              <div id="holding-list" class="holding-list"></div>
+            </section>
+
+            <aside class="surface-panel quick-panel">
+              <div class="panel-head compact">
+                <div>
+                  <p class="section-kicker">Quick Access</p>
+                  <h4>快捷入口</h4>
+                </div>
+              </div>
+              <div class="quick-grid">
+                <button class="quick-card" data-view-jump="import">
+                  <strong>截图导入</strong>
+                  <span>从持仓截图识别基金、金额、收益，再回填到录入区核对。</span>
+                </button>
+                <button class="quick-card" data-view-jump="library">
+                  <strong>浏览基金库</strong>
+                  <span>从完整基金池搜索基金代码、名称或主题，再加入持仓。</span>
+                </button>
+                <button class="quick-card" data-view-jump="assistant">
+                  <strong>问 AI 助手</strong>
+                  <span>围绕某只基金问“为什么涨跌、什么时候卖、要不要调仓”。</span>
+                </button>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="import-section" class="page-section">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Import Studio</p>
+              <h3>导入与录入</h3>
+            </div>
+          </div>
+
+          <div class="import-layout">
+            <section class="surface-panel import-panel">
+              <div class="panel-head compact">
+                <div>
+                  <p class="section-kicker">OCR Import</p>
+                  <h4>截图导入</h4>
+                </div>
+              </div>
+              <input id="screenshot-input" type="file" accept="image/*" hidden />
+              <div class="import-stack">
+                <button id="pick-screenshot" class="import-action primary-import" type="button">上传持仓截图</button>
+                <button id="go-manual" class="import-action secondary-import" type="button">切换到手动录入</button>
+              </div>
+              <p id="picker-status" class="helper-text">选择截图后，系统会自动 OCR 识别基金、金额、收益，并回填到下方录入区。</p>
+            </section>
+
+            <section id="manual-section" class="surface-panel manual-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">Manual Entry</p>
+                  <h4>批量录入持仓</h4>
+                </div>
+                <button id="manual-reset" class="ghost-button" type="button">清空</button>
+              </div>
+              <form id="manual-form" class="manual-form">
+                <div id="manual-rows" class="manual-rows"></div>
+                <div class="manual-toolbar">
+                  <button id="add-row" class="ghost-button" type="button">新增一行</button>
+                  <label class="toggle-row">
+                    <input id="sync-watchlist" type="checkbox" checked />
+                    <span>同步添加到自选</span>
+                  </label>
+                </div>
+                <p id="manual-status" class="helper-text">支持输入基金代码或基金名称，填写持有金额和持有收益后自动换算成本。</p>
+                <button id="complete-manual" class="primary-submit" type="submit">完成(0)</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="library-section" class="page-section">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Fund Library</p>
+              <h3>基金库</h3>
+            </div>
+          </div>
+
+          <section class="surface-panel library-panel">
+            <div class="library-toolbar">
+              <form id="catalog-form" class="library-searchbar">
+                <label class="search-box">
+                  <span>搜索基金</span>
+                  <input id="catalog-query" type="text" placeholder="输入基金代码、名称或主题，例如：005827 / 白酒 / 易方达" />
+                </label>
+                <button class="primary-submit compact-submit" type="submit">搜索</button>
+              </form>
+              <div class="library-actions">
+                <span id="catalog-count" class="chip-info">加载中</span>
+                <button id="catalog-refresh" class="ghost-button" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="library-meta">
+              <p id="catalog-hint" class="helper-text">默认展示真实基金池，可按代码、名称和主题检索。</p>
+            </div>
+            <div class="catalog-table table-head">
+              <div>基金名称</div>
+              <div>类别</div>
+              <div>主题</div>
+              <div>风险</div>
+              <div>最新净值 / 状态</div>
+            </div>
+            <div id="catalog-list" class="catalog-list"></div>
+            <div class="catalog-footer">
+              <button id="catalog-prev" class="ghost-button" type="button">上一页</button>
+              <span id="catalog-page" class="helper-text">第 1 页</span>
+              <button id="catalog-next" class="ghost-button" type="button">下一页</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="assistant-section" class="page-section">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">AI Assistant</p>
+              <h3>金融分析助手</h3>
+            </div>
+          </div>
+
+          <div class="assistant-layout">
+            <section class="surface-panel assistant-form-panel">
+              <div class="panel-head compact">
+                <div>
+                  <p class="section-kicker">Question</p>
+                  <h4>提问区</h4>
+                </div>
+              </div>
+              <form id="assistant-form" class="assistant-form">
+                <label>
+                  <span>选择持仓基金</span>
+                  <select id="assistant-fund" name="fund_id"></select>
+                </label>
+                <label>
+                  <span>可用现金</span>
+                  <input id="assistant-cash" name="cash_available" type="number" value="2000" min="0" step="100" />
+                </label>
+                <label>
+                  <span>你的问题</span>
+                  <textarea id="assistant-question" name="question" rows="7" placeholder="例如：为什么最近会跌？接下来什么时候更适合卖？"></textarea>
+                </label>
+                <button class="primary-submit" type="submit">生成分析建议</button>
+              </form>
+            </section>
+
+            <section id="assistant-result" class="surface-panel assistant-result-panel">
+              <p class="empty-copy">先完成持仓导入，再让 AI 解释为什么涨跌、什么时候更适合卖。</p>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js?v=20260308-onepage"></script>
+  </body>
+</html>
