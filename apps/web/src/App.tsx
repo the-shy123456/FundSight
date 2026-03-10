@@ -250,9 +250,6 @@ export default function App() {
   const summary = snapshot?.summary;
   const activeConfig = useMemo(() => aiConfigs.find((item) => item.active) || aiConfigs[0] || null, [aiConfigs]);
   const topContribution = intraday?.contributions?.[0];
-  const dataQuality = snapshot?.data_quality ?? summary?.data_quality;
-  const realDataCount = dataQuality?.real_data_holding_count ?? 0;
-  const proxyCount = dataQuality?.proxy_holding_count ?? 0;
 
   useEffect(() => {
     saveManualRows(manualRows);
@@ -540,7 +537,7 @@ export default function App() {
             </div>
             <div className="flex items-center">
               <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100 inline-flex items-center">
-                <Sparkles className="h-3 w-3 mr-1 text-yellow-500" /> {realDataCount ? `${realDataCount}只真实估值参考` : "场内穿透实时引擎: 运行中"}
+                <Sparkles className="h-3 w-3 mr-1 text-yellow-500" /> 场内穿透实时引擎：运行中
               </span>
               <div className="h-8 w-8 rounded-full ml-4 border border-gray-200 bg-blue-600 text-white flex items-center justify-center text-xs font-bold">AI</div>
             </div>
@@ -550,13 +547,6 @@ export default function App() {
 
       <main className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full">
         {pageNotice ? <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">{pageNotice}</div> : null}
-        {dataQuality?.holding_count ? (
-          <div className="mb-4 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
-            当前组合共 {dataQuality.holding_count} 只基金，{realDataCount} 只走真实估值参考，{proxyCount} 只仍为原型代理估算。
-            {dataQuality.latest_estimate_as_of ? ` 最近估值时间 ${dataQuality.latest_estimate_as_of}。` : ""}
-          </div>
-        ) : null}
-
         {activeTab === "portfolio" ? (
           <div className="h-full flex flex-col">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
