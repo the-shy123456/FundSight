@@ -40,7 +40,9 @@ export async function requestFundsCatalog({
 }): Promise<FundCatalogResponse> {
   const cleanQuery = query.trim();
   if (cleanQuery) {
-    const payload = await fetchJson<{ items?: FundCatalogItem[]; total?: number }>(`/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}`);
+    const payload = await fetchJson<{ items?: FundCatalogItem[]; total?: number }>(
+      `/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}&limit=${pageSize}`,
+    );
     return {
       items: payload.items ?? [],
       total: payload.total ?? payload.items?.length ?? 0,
@@ -55,7 +57,9 @@ export async function requestFundsCatalog({
 export async function requestFundSearch(keyword: string): Promise<FundCatalogItem[]> {
   const cleanQuery = keyword.trim();
   if (!cleanQuery) return [];
-  const payload = await fetchJson<{ items?: FundCatalogItem[] }>(`/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}`);
+  const payload = await fetchJson<{ items?: FundCatalogItem[] }>(
+    `/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}&limit=10`,
+  );
   return payload.items ?? [];
 }
 

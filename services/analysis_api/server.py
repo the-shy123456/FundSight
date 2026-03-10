@@ -35,7 +35,7 @@ def json_response(handler: BaseHTTPRequestHandler, payload: Any, status: int = 2
     handler.wfile.write(encoded)
 
 
-def search_funds(query: str) -> list[dict[str, object]]:
+def search_funds(query: str, limit: int = 20) -> list[dict[str, object]]:
     clean_query = query.strip()
     if not clean_query:
         return []
@@ -52,7 +52,7 @@ def search_funds(query: str) -> list[dict[str, object]]:
         if clean_query.lower() in fund.fund_id.lower() or clean_query.lower() in fund.name.lower()
     ]
 
-    real_matches = search_real_funds(clean_query)
+    real_matches = search_real_funds(clean_query, limit=limit)
     merged: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in [*sample_matches, *real_matches]:
@@ -61,12 +61,24 @@ def search_funds(query: str) -> list[dict[str, object]]:
             continue
         seen.add(fund_id)
         merged.append(item)
-    return merged[:5]
+    return merged[:limit]
 
 
-def build_search_response(keyword: str) -> dict[str, object]:
-    items = search_funds(keyword)
+def build_search_response(keyword: str, limit: int = 20) -> dict[str, object]:
+    items = search_funds(keyword, limit=limit)
     return {"items": items, "total": len(items)}
+
+
+def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
+    if raw_limit is None:
+        return default
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit 必须是数字") from exc
+    if not 1 <= limit <= 50:
+        raise ValueError("limit 必须在 1-50 之间")
+    return limit
 
 
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
@@ -123,7 +135,12 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             if not keyword:
                 json_response(self, {"message": "q 不能为空"}, HTTPStatus.BAD_REQUEST)
                 return
-            json_response(self, build_search_response(keyword))
+            try:
+                limit = parse_search_limit(query.get("limit", [None])[0])
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            json_response(self, build_search_response(keyword, limit=limit))
             return
 
         if parsed.path == "/api/v1/funds":
@@ -337,4 +354,3 @@ def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
 
 if __name__ == "__main__":
     run_server()
-
