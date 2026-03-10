@@ -253,7 +253,11 @@ def build_real_fund_profile(fund_code: str) -> FundProfile:
 
     source = fetch_pingzhong_source(cache_key)
     name = str(_parse_js_value(source, "fS_name", cache_key))
-    fee_rate = round(float(_parse_js_value(source, "fund_Rate", 0.15)) / 100, 4)
+    fee_rate_value = _parse_js_value(source, "fund_Rate", 0.15)
+    try:
+        fee_rate = round(float(fee_rate_value) / 100, 4)
+    except (TypeError, ValueError):
+        fee_rate = round(0.15 / 100, 4)
     manager_items = _parse_js_value(source, "Data_currentFundManager", [])
     manager_name = "未知"
     manager_tenure_years = 1.0
