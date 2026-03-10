@@ -484,7 +484,8 @@ def estimate_real_fund_intraday(fund: FundProfile) -> dict[str, Any]:
         official_return=official_return,
         penetration_return=penetration_return,
     )
-    estimated_nav = round(float(estimate["latest_nav"]) * (1 + penetration_return), 4)
+    official_estimated_nav = round(float(estimate["estimated_nav"]), 4)
+    penetration_estimated_nav = round(float(estimate["latest_nav"]) * (1 + penetration_return), 4)
     labels = ["昨收", str(estimate.get("gztime", "当前")).split(" ")[-1][:5] or "当前"]
     series = [
         {"name": "穿透估算收益率", "values": [0.0, round(penetration_return, 4)]},
@@ -496,12 +497,14 @@ def estimate_real_fund_intraday(fund: FundProfile) -> dict[str, Any]:
         "fund_name": fund.name,
         "theme": fund.theme,
         "latest_nav": round(float(estimate["latest_nav"]), 4),
-        "estimated_nav": estimated_nav,
-        "official_estimated_nav": round(float(estimate["estimated_nav"]), 4),
-        "estimated_return": round(penetration_return, 4),
-        "estimated_intraday_return": round(penetration_return, 4),
+        "estimated_nav": official_estimated_nav,
+        "official_estimated_nav": official_estimated_nav,
+        "penetration_estimated_nav": penetration_estimated_nav,
+        "estimated_return": round(official_return, 4),
+        "estimated_intraday_return": round(official_return, 4),
+        "penetration_estimated_return": round(penetration_return, 4),
         "official_estimated_return": round(official_return, 4),
-        "estimated_return_series": [0.0, round(penetration_return, 4)],
+        "estimated_return_series": [0.0, round(official_return, 4)],
         "labels": labels,
         "series": series,
         "chart": {"labels": labels, "series": series, "unit": "return"},
@@ -513,7 +516,7 @@ def estimate_real_fund_intraday(fund: FundProfile) -> dict[str, Any]:
         "estimate_as_of": str(estimate.get("gztime", "")).split(" ")[-1][:5] or "当前",
         "holdings_disclosure_date": str(holdings_payload.get("disclosure_date", "")),
         "observations": [
-            f"官方估值收益 {official_return * 100:.2f}% ，穿透估算收益 {penetration_return * 100:.2f}% 。",
+            f"主展示以官方估值为准（{official_return * 100:.2f}%），穿透估算 {penetration_return * 100:.2f}% 仅用于贡献拆解/校验。",
             f"前十大持仓覆盖约 {disclosed_weight_ratio * 100:.1f}% 净值，股票仓位约 {stock_position_ratio * 100:.1f}% 。",
             f"估值时间 {estimate.get('gztime', '未知')}，适合看盘中节奏，不适合替代真实成交结果。",
         ],

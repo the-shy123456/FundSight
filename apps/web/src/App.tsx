@@ -105,6 +105,11 @@ function formatPlainAmount(value: unknown): string {
   });
 }
 
+function displayName(value?: string | null): string {
+  if (!value) return "";
+  return String(value).replace("发起式联接", "联接");
+}
+
 function nowLabel(): string {
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -241,7 +246,7 @@ function buildAnalysisQuestion(position: PortfolioPosition): string {
 }
 
 function buildRelatedFundLabel(item: FundCatalogItem): string {
-  const name = (item.name ?? "").trim();
+  const name = displayName((item.name ?? "").trim());
   const suffix = name.slice(-1);
   if (suffix === "A" || suffix === "C") {
     return `联接${suffix} ${item.fund_id}`;
@@ -484,7 +489,7 @@ export default function App() {
     setImportTab("manual");
     setManualEntry({ query: item.fund_id, fundName: item.name, amount: "", profit: "" });
     setManualSuggestions([]);
-    setModalNotice(`已选中 ${item.name}，请补充持有金额和累计收益。`);
+    setModalNotice(`已选中 ${displayName(item.name)}，请补充持有金额和累计收益。`);
     void loadRelatedFunds(item);
   }
 
@@ -681,7 +686,7 @@ export default function App() {
                       {positions.length ? positions.map((item) => (
                         <tr key={item.fund_id}>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                            <div className="text-sm font-medium text-gray-900">{displayName(item.name)}</div>
                             <div className="text-xs text-gray-500 mt-0.5">
                               {item.fund_id}
                               <span className={`px-1 py-0.5 rounded text-[10px] ml-1 ${item.is_real_data ? "bg-emerald-50 text-emerald-600" : "bg-blue-50 text-blue-600"}`}>
@@ -793,7 +798,7 @@ export default function App() {
                         {catalogItems.map((item) => (
                           <tr key={item.fund_id}>
                             <td className="px-6 py-4">
-                              <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                              <div className="text-sm font-medium text-gray-900">{displayName(item.name)}</div>
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-600">{item.theme || "--"}</td>
@@ -911,7 +916,7 @@ export default function App() {
                       <div className="absolute z-20 w-full mt-1 bg-white shadow-lg border border-gray-200 rounded-lg max-h-40 overflow-y-auto">
                         {manualSuggestions.map((item) => (
                           <button key={item.fund_id} type="button" className="w-full px-4 py-3 hover:bg-blue-50 text-sm flex justify-between text-left" onClick={() => pickSuggestion(item)}>
-                            <span className="font-medium">{item.name}</span><span className="text-xs text-gray-500">{item.fund_id}</span>
+                            <span className="font-medium">{displayName(item.name)}</span><span className="text-xs text-gray-500">{item.fund_id}</span>
                           </button>
                         ))}
                       </div>
@@ -926,7 +931,7 @@ export default function App() {
                             className="px-2.5 py-1 rounded-full border border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200"
                             onClick={() => {
                               pickSuggestion(item);
-                              setModalNotice(`已切换为 ${item.name}。`);
+                              setModalNotice(`已切换为 ${displayName(item.name)}。`);
                             }}
                           >
                             {buildRelatedFundLabel(item)}
