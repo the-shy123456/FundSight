@@ -45,6 +45,7 @@ export interface DataQualitySummary {
 export interface PortfolioPosition {
   fund_id: string;
   name: string;
+  name_display?: string;
   category?: string;
   theme?: string;
   risk_level?: string;
@@ -101,6 +102,7 @@ export interface PortfolioSnapshot {
 export interface IntradayContribution {
   fund_id: string;
   name: string;
+  name_display?: string;
   theme?: string;
   today_estimated_pnl?: number;
   confidence_label?: string;
@@ -122,6 +124,7 @@ export interface PortfolioIntraday {
 export interface FundCatalogItem {
   fund_id: string;
   name: string;
+  name_display?: string;
   category?: string;
   theme?: string;
   risk_level?: string;

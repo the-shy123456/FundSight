@@ -6,6 +6,7 @@ from .analytics import build_diagnosis
 from .holdings import HoldingLot, get_holdings, parse_holdings_payload, resolve_fund
 from .intraday_estimator import estimate_fund_intraday
 from .models import FundProfile
+from .name_display import normalize_name_display
 from .sample_data import FUNDS
 
 
@@ -42,6 +43,7 @@ def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict
     if fund is None:
         raise ValueError(f"基金不存在：{holding.fund_id}")
 
+    name_display = normalize_name_display(fund.name)
     diagnosis = build_diagnosis(fund)
     estimate = estimate_fund_intraday(fund)
     latest_nav = round(float(fund.nav_history[-1]), 4)
@@ -55,6 +57,7 @@ def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict
     return {
         "fund_id": fund.fund_id,
         "name": fund.name,
+        "name_display": name_display,
         "category": fund.category,
         "theme": fund.theme,
         "risk_level": fund.risk_level,
@@ -266,6 +269,7 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
             {
                 "fund_id": fund.fund_id,
                 "name": fund.name,
+                "name_display": normalize_name_display(fund.name),
                 "theme": fund.theme,
                 "today_estimated_pnl": round(previous_value * float(estimate["estimated_return"]), 2),
                 "confidence_label": estimate["confidence_label"],

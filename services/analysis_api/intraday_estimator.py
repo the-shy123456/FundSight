@@ -4,6 +4,7 @@ from datetime import datetime
 
 from .analytics import fund_metrics, quality_score
 from .models import FundProfile
+from .name_display import normalize_name_display
 from .real_data import estimate_real_fund_intraday, fetch_fund_estimate, is_real_fund_code
 
 
@@ -91,6 +92,12 @@ def _decorate_estimate_meta(
         "estimate_scope_label",
         "实时收益参考" if is_real_data else "原型估算",
     )
+    return next_payload
+
+
+def _attach_fund_name_display(payload: dict[str, object], fund: FundProfile) -> dict[str, object]:
+    next_payload = dict(payload)
+    next_payload["fund_name_display"] = normalize_name_display(fund.name)
     return next_payload
 
 
@@ -238,7 +245,7 @@ def _build_official_estimate_only_payload(fund: FundProfile) -> dict[str, object
 def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
     if is_real_fund_code(fund.fund_id):
         try:
-            payload = estimate_real_fund_intraday(fund)
+            payload = _attach_fund_name_display(estimate_real_fund_intraday(fund), fund)
             return _decorate_estimate_meta(
                 payload,
                 source="official_estimate_penetration",
@@ -248,7 +255,7 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
                 disclosure_date=str(payload.get("holdings_disclosure_date", "")),
             )
         except Exception:
-            payload = _build_official_estimate_only_payload(fund)
+            payload = _attach_fund_name_display(_build_official_estimate_only_payload(fund), fund)
             return _decorate_estimate_meta(
                 payload,
                 source="official_estimate_only",
@@ -258,7 +265,7 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
                 disclosure_date=str(payload.get("holdings_disclosure_date", "")),
             )
 
-    payload = _sample_estimate_fund_intraday(fund)
+    payload = _attach_fund_name_display(_sample_estimate_fund_intraday(fund), fund)
     return _decorate_estimate_meta(
         payload,
         source="theme_proxy_simulation",

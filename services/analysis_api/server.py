@@ -13,6 +13,7 @@ from .assistant import ask_assistant
 from .holdings import get_holdings, import_holdings_payload, parse_holdings_payload
 from .intraday_estimator import estimate_fund_intraday
 from .models import InvestorProfile
+from .name_display import attach_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
 from .research import build_research_brief
@@ -65,7 +66,7 @@ def search_funds(query: str, limit: int = 20) -> list[dict[str, object]]:
 
 
 def build_search_response(keyword: str, limit: int = 20) -> dict[str, object]:
-    items = search_funds(keyword, limit=limit)
+    items = [attach_name_display(item) for item in search_funds(keyword, limit=limit)]
     return {"items": items, "total": len(items)}
 
 
@@ -83,7 +84,7 @@ def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
 
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
     try:
-        return fetch_fund_catalog(page=page, page_size=page_size, risk_level=risk_level)
+        payload = fetch_fund_catalog(page=page, page_size=page_size, risk_level=risk_level)
     except Exception:
         fallback = [
             build_diagnosis(fund)
@@ -92,7 +93,9 @@ def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | N
         ]
         start = max(0, (page - 1) * page_size)
         end = start + page_size
-        return {"items": fallback[start:end], "total": len(fallback), "page": page, "page_size": page_size}
+        payload = {"items": fallback[start:end], "total": len(fallback), "page": page, "page_size": page_size}
+    payload["items"] = [attach_name_display(item) for item in payload.get("items", [])]
+    return payload
 
 
 def parse_holdings_request(data: dict[str, Any], *, persist: bool) -> tuple[object, tuple[object, ...]]:
