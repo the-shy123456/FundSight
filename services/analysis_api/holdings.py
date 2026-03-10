@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import FundProfile
-from .real_data import build_real_fund_profile, is_real_fund_code
+from .real_data import build_real_fund_profile, is_real_fund_code, search_funds
 from .sample_data import FUNDS
 
 
@@ -74,25 +74,59 @@ def replace_holdings(holdings: tuple[HoldingLot, ...], *, persist: bool = True) 
 
 
 def resolve_fund(fund_id: str, funds: tuple[FundProfile, ...] = FUNDS) -> FundProfile | None:
-    normalized = str(fund_id).strip().upper()
-    matched = next((fund for fund in funds if fund.fund_id == normalized), None)
+    normalized = str(fund_id).strip()
+    if not normalized:
+        return None
+
+    normalized_upper = normalized.upper()
+    matched = next((fund for fund in funds if fund.fund_id == normalized_upper), None)
     if matched is not None:
         return matched
-    if is_real_fund_code(normalized):
+
+    normalized_casefold = normalized.casefold()
+    matched = next((fund for fund in funds if fund.name.casefold() == normalized_casefold), None)
+    if matched is not None:
+        return matched
+
+    if len(normalized_casefold) >= 3:
+        candidates = [fund for fund in funds if normalized_casefold in fund.name.casefold()]
+        if len(candidates) == 1:
+            return candidates[0]
+
+    if is_real_fund_code(normalized_upper):
         try:
-            return build_real_fund_profile(normalized)
+            return build_real_fund_profile(normalized_upper)
         except Exception:  # noqa: BLE001
             return None
-    return None
+
+    try:
+        results = search_funds(normalized, sample_funds=funds, limit=3)
+    except Exception:  # noqa: BLE001
+        results = []
+
+    if not results:
+        return None
+
+    candidate_id = str(results[0].get("fund_id", "")).strip().upper()
+    if not candidate_id:
+        return None
+    if is_real_fund_code(candidate_id):
+        try:
+            return build_real_fund_profile(candidate_id)
+        except Exception:  # noqa: BLE001
+            return None
+    return next((fund for fund in funds if fund.fund_id == candidate_id), None)
 
 
 def _build_from_records(records: list[dict[str, Any]], funds: tuple[FundProfile, ...]) -> tuple[HoldingLot, ...]:
     aggregated: dict[str, tuple[float, float]] = {}
 
     for index, record in enumerate(records, start=1):
-        fund_id = str(record.get("fund_id", "")).strip().upper()
-        if resolve_fund(fund_id, funds) is None:
-            raise ValueError(f"第 {index} 条记录的基金代码无效：{fund_id or '空值'}")
+        raw_fund_id = str(record.get("fund_id", "")).strip()
+        resolved = resolve_fund(raw_fund_id, funds)
+        if resolved is None:
+            raise ValueError(f"第 {index} 条记录的基金代码无效：{raw_fund_id or '空值'}")
+        canonical_fund_id = resolved.fund_id
 
         try:
             cost_nav = float(record.get("unit_cost", record.get("cost_nav", 0)))
@@ -107,8 +141,8 @@ def _build_from_records(records: list[dict[str, Any]], funds: tuple[FundProfile,
             raise ValueError(f"第 {index} 条记录必须提供正数份额或本金")
 
         normalized_shares = shares if shares > 0 else principal / cost_nav
-        current_shares, current_cost = aggregated.get(fund_id, (0.0, 0.0))
-        aggregated[fund_id] = (
+        current_shares, current_cost = aggregated.get(canonical_fund_id, (0.0, 0.0))
+        aggregated[canonical_fund_id] = (
             current_shares + normalized_shares,
             current_cost + normalized_shares * cost_nav,
         )

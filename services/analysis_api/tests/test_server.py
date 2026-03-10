@@ -129,6 +129,41 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertEqual(payload["summary"]["holding_count"], 2)
         self.assertEqual({item["fund_id"] for item in payload["positions"]}, {"F003", "F004"})
 
+    @patch("services.analysis_api.holdings.search_funds")
+    @patch("services.analysis_api.holdings.build_real_fund_profile")
+    def test_import_endpoint_accepts_fund_name_with_search(
+        self,
+        mock_build_profile,
+        mock_search_funds,
+    ) -> None:
+        mock_search_funds.return_value = [
+            {
+                "fund_id": "005827",
+                "name": "易方达蓝筹精选混合",
+                "category": "混合型",
+                "theme": "蓝筹价值",
+                "risk_level": "high",
+            }
+        ]
+        mock_build_profile.return_value = FundProfile(
+            fund_id="005827",
+            name="易方达蓝筹精选混合",
+            category="混合型",
+            risk_level="high",
+            manager="张坤",
+            manager_tenure_years=5.2,
+            fee_rate=0.015,
+            theme="蓝筹价值",
+            nav_history=(1.0, 1.01, 1.02, 1.03),
+        )
+
+        payload = self._post_json(
+            "/api/v1/holdings/import",
+            {"text": "易方达蓝筹精选混合,1000,1.10"},
+        )
+        self.assertEqual(payload["summary"]["holding_count"], 1)
+        self.assertEqual(payload["positions"][0]["fund_id"], "005827")
+
     def test_import_endpoint_accepts_holdings_payload(self) -> None:
         payload = self._post_json(
             "/api/v1/holdings/import",
