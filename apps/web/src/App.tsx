@@ -114,6 +114,37 @@ function nowLabel(): string {
   }).format(new Date());
 }
 
+function extractTimeHHMM(value?: string | null): string | null {
+  if (!value) return null;
+  const match = String(value).match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = match[1].padStart(2, "0");
+  return `${hour}:${match[2]}`;
+}
+
+function isChinaTradingHours(now: Date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+  const getPart = (type: string) => parts.find((part) => part.type === type)?.value;
+  const weekday = getPart("weekday");
+  if (!weekday) return false;
+  const weekdayIndex = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(weekday);
+  if (weekdayIndex < 0 || weekdayIndex >= 5) return false;
+  const hour = Number(getPart("hour") ?? "0");
+  const minute = Number(getPart("minute") ?? "0");
+  const minutes = hour * 60 + minute;
+  const morningStart = 9 * 60 + 30;
+  const morningEnd = 11 * 60 + 30;
+  const afternoonStart = 13 * 60;
+  const afternoonEnd = 15 * 60;
+  return (minutes >= morningStart && minutes <= morningEnd) || (minutes >= afternoonStart && minutes <= afternoonEnd);
+}
+
 function greetingText(snapshot: PortfolioSnapshot | null): string {
   if (!snapshot?.summary) {
     return "你好！我是你的专属 AI 金融助理。先导入持仓，我再结合盘中估算帮你分析。";
@@ -248,6 +279,11 @@ export default function App() {
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
+  const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
+  const latestEstimateTime = extractTimeHHMM(dataQuality?.latest_estimate_as_of);
+  const updateStatusText = isChinaTradingHours()
+    ? `更新时间：${latestEstimateTime ?? "当前"}`
+    : `已收盘/非交易时段，最后更新 ${latestEstimateTime ?? "15:00"}。`;
   const activeConfig = useMemo(() => aiConfigs.find((item) => item.active) || aiConfigs[0] || null, [aiConfigs]);
   const topContribution = intraday?.contributions?.[0];
 
@@ -569,7 +605,10 @@ export default function App() {
             <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-[500px]">
               <div className="w-full md:w-3/4 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-                  <h2 className="text-lg font-bold text-gray-800">持仓明细 (实时)</h2>
+                  <div className="flex flex-col">
+                    <h2 className="text-lg font-bold text-gray-800">持仓明细</h2>
+                    <p className="text-xs text-slate-500 mt-1">{updateStatusText}</p>
+                  </div>
                   <div className="space-x-3">
                     <button type="button" onClick={openImportModal} className="bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-100 transition-all font-medium inline-flex items-center">
                       <FolderPlus className="h-4 w-4 mr-1" /> 导入持仓
@@ -601,7 +640,6 @@ export default function App() {
                               <span className={`px-1 py-0.5 rounded text-[10px] ml-1 ${item.is_real_data ? "bg-emerald-50 text-emerald-600" : "bg-blue-50 text-blue-600"}`}>
                                 {item.is_real_data ? "真实参考" : "原型估算"}
                               </span>
-                              {item.estimate_as_of ? <span className="ml-1 text-[10px] text-gray-400">{item.estimate_as_of}</span> : null}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">{formatPlainAmount(item.current_value ?? item.market_value)}</td>

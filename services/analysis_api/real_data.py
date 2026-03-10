@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import html
 import json
 import re
@@ -59,6 +59,17 @@ def _cache_get(namespace: str, key: str, ttl_seconds: int) -> Any | None:
 def _cache_set(namespace: str, key: str, value: Any) -> Any:
     CACHE[(namespace, key)] = (time.time(), value)
     return value
+
+
+def _is_trading_time_cn(now: datetime) -> bool:
+    if now.tzinfo is None:
+        cn_now = now + timedelta(hours=8)
+    else:
+        cn_now = now.astimezone(timezone(timedelta(hours=8)))
+    if cn_now.weekday() >= 5:
+        return False
+    minutes = cn_now.hour * 60 + cn_now.minute
+    return (9 * 60 + 30 <= minutes <= 11 * 60 + 30) or (13 * 60 <= minutes <= 15 * 60)
 
 
 def _fetch_text(url: str, ttl_seconds: int = 300, referer: str = "https://fund.eastmoney.com/") -> str:
@@ -277,13 +288,14 @@ def build_default_real_funds() -> tuple[FundProfile, ...]:
 
 def fetch_fund_estimate(fund_code: str) -> dict[str, Any]:
     cache_key = fund_code.strip()
-    cached = _cache_get("estimate", cache_key, 120)
+    ttl_seconds = 15 if _is_trading_time_cn(datetime.utcnow()) else 300
+    cached = _cache_get("estimate", cache_key, ttl_seconds)
     if cached is not None:
         return cached
 
     text = _fetch_text(
         f"https://fundgz.1234567.com.cn/js/{cache_key}.js?rt={int(time.time() * 1000)}",
-        ttl_seconds=60,
+        ttl_seconds=ttl_seconds,
         referer=f"https://fund.eastmoney.com/{cache_key}.html",
     )
     match = re.search(r"jsonpgz\((\{.*\})\);", text)
