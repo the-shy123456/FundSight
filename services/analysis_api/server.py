@@ -1,11 +1,12 @@
 ﻿from __future__ import annotations
 
 import json
+import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .analytics import build_dashboard_snapshot, build_diagnosis, build_fund_snapshot, recommend_portfolio
 from .assistant import ask_assistant
@@ -21,7 +22,8 @@ from .sample_data import FUNDS
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 WEB_DIR = ROOT_DIR / "apps" / "web"
-STATIC_FILES = {"/app.js", "/styles.css", "/fund.js", "/fund.css"}
+WEB_DIST_DIR = WEB_DIR / "dist"
+WEB_DIST_INDEX = WEB_DIST_DIR / "index.html"
 
 
 def json_response(handler: BaseHTTPRequestHandler, payload: Any, status: int = 200) -> None:
@@ -169,15 +171,20 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path in {"/", "/index.html"}:
-            self._serve_static("index.html")
+            self._serve_file(WEB_DIST_INDEX)
             return
 
-        if parsed.path == "/fund.html":
-            self._serve_static("fund.html")
-            return
+        if not parsed.path.startswith("/api/"):
+            requested_file = self._resolve_frontend_file(parsed.path)
+            if requested_file is not None and requested_file.is_file():
+                self._serve_file(requested_file)
+                return
 
-        if parsed.path in STATIC_FILES:
-            self._serve_static(parsed.path.lstrip("/"))
+            if parsed.path.startswith("/assets/"):
+                json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)
+                return
+
+            self._serve_file(WEB_DIST_INDEX)
             return
 
         json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)
@@ -285,18 +292,33 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             json_response(self, {"message": "请求体不是合法 JSON"}, HTTPStatus.BAD_REQUEST)
             return None
 
-    def _serve_static(self, filename: str) -> None:
-        file_path = WEB_DIR / filename
+    def _resolve_frontend_file(self, request_path: str) -> Path | None:
+        relative_path = Path(unquote(request_path).lstrip("/"))
+        if any(part in {"", ".", ".."} for part in relative_path.parts):
+            return None
+
+        file_path = (WEB_DIST_DIR / relative_path).resolve()
+        try:
+            file_path.relative_to(WEB_DIST_DIR.resolve())
+        except ValueError:
+            return None
+        return file_path
+
+    def _serve_file(self, file_path: Path) -> None:
         if not file_path.exists():
             json_response(self, {"message": "页面不存在"}, HTTPStatus.NOT_FOUND)
             return
 
         content = file_path.read_bytes()
-        content_type = {
-            ".html": "text/html; charset=utf-8",
-            ".js": "application/javascript; charset=utf-8",
-            ".css": "text/css; charset=utf-8",
-        }.get(file_path.suffix, "application/octet-stream")
+        content_type, _ = mimetypes.guess_type(file_path.name)
+        if content_type is None:
+            content_type = "application/octet-stream"
+        elif content_type.startswith("text/") or content_type in {
+            "application/javascript",
+            "application/json",
+            "image/svg+xml",
+        }:
+            content_type = f"{content_type}; charset=utf-8"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))

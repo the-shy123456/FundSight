@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from .analytics import build_diagnosis, fund_metrics
 from .holdings import HoldingLot, get_holdings
@@ -74,6 +74,11 @@ def ask_assistant(
             "today_estimated_pnl": position["today_estimated_pnl"],
         }
 
+    source_label = str(estimate.get("estimate_source_label", "收益参考"))
+    estimate_as_of = str(estimate.get("estimate_as_of", "")) or "当前"
+    disclosure_date = str(estimate.get("holdings_disclosure_date", ""))
+    is_real_data = bool(estimate.get("is_real_data", False))
+
     scenarios = [
         {
             "name": "乐观",
@@ -94,9 +99,9 @@ def ask_assistant(
 
     evidence = [
         {
-            "label": "盘中估算",
+            "label": source_label,
             "value": f"{float(estimate['estimated_return']) * 100:.2f}%",
-            "detail": str(estimate["confidence"]["reason"]),
+            "detail": f"估值时间 {estimate_as_of}。{str(estimate['confidence']['reason'])}",
         },
         {
             "label": "近 3 期动量",
@@ -114,6 +119,14 @@ def ask_assistant(
             "detail": "AI 助手会优先结合你的成本和持仓盈亏给建议。",
         },
     ]
+    if disclosure_date:
+        evidence.append(
+            {
+                "label": "持仓披露日期",
+                "value": disclosure_date,
+                "detail": "披露越新，穿透估算通常越有参考价值。",
+            }
+        )
 
     actions = [
         {
@@ -133,11 +146,18 @@ def ask_assistant(
         },
     ]
 
-    risks = [
-        "盘中估算来自本地样例代理，不代表官方净值与真实成交结果。",
-        "主题基金短期受板块波动影响较大，追涨后容易遇到回撤。",
-        "如果你频繁试图卖在高点、买在低点，实际更容易被震荡反复打脸。",
-    ]
+    if is_real_data:
+        risks = [
+            "当前盘中收益来自官方估值与持仓穿透联合参考，仍不等于基金公司最终净值与真实成交结果。",
+            "前十大持仓披露存在时滞，盘中风格漂移会让穿透结果产生误差。",
+            "即使有真实估值参考，短线频繁择时仍可能被震荡反复打脸。",
+        ]
+    else:
+        risks = [
+            "当前盘中估算仍来自原型级主题代理，不代表官方净值与真实成交结果。",
+            "主题基金短期受板块波动影响较大，追涨后容易遇到回撤。",
+            "如果你频繁试图卖在高点、买在低点，实际更容易被震荡反复打脸。",
+        ]
 
     return {
         "question": clean_question,
@@ -159,5 +179,5 @@ def ask_assistant(
             "label": estimate["confidence"]["label"],
             "reason": "当前置信度主要受披露新鲜度、主题波动和代理篮子稳定性影响。",
         },
-        "disclaimer": "该回答是样例级决策辅助，不构成收益承诺、投顾建议或真实交易指令。",
+        "disclaimer": estimate.get("disclaimer") or "该回答是样例级决策辅助，不构成收益承诺、投顾建议或真实交易指令。",
     }

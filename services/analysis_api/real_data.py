@@ -494,6 +494,8 @@ def estimate_real_fund_intraday(fund: FundProfile) -> dict[str, Any]:
         "confidence_meta": confidence,
         "confidence_label": str(confidence["label"]),
         "proxy_note": "使用东财前十大持仓与实时行情做穿透估算，并与官方实时估值交叉校验。",
+        "estimate_as_of": str(estimate.get("gztime", "")).split(" ")[-1][:5] or "当前",
+        "holdings_disclosure_date": str(holdings_payload.get("disclosure_date", "")),
         "observations": [
             f"官方估值收益 {official_return * 100:.2f}% ，穿透估算收益 {penetration_return * 100:.2f}% 。",
             f"前十大持仓覆盖约 {disclosed_weight_ratio * 100:.1f}% 净值，股票仓位约 {stock_position_ratio * 100:.1f}% 。",

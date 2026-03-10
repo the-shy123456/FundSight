@@ -65,6 +65,28 @@ class OcrImportTestCase(unittest.TestCase):
         self.assertEqual(payload["suggestions"][0]["amount"], "382.95")
         self.assertEqual(payload["suggestions"][0]["profit"], "-13.44")
 
+    @patch("services.analysis_api.ocr_import.search_funds")
+    def test_parse_holdings_returns_match_metadata_and_warning(self, mock_search_funds) -> None:
+        mock_search_funds.return_value = [
+            {"fund_id": "005827", "name": "易方达蓝筹精选混合", "category": "混合型", "theme": "蓝筹价值", "risk_level": "high"}
+        ]
+        payload = parse_holdings_from_ocr_text("易方达蓝筹精选混合\n¥3109.64\n+65.62")
+        self.assertTrue(payload["warnings"])
+        self.assertEqual(payload["suggestions"][0]["fundQuery"], "005827")
+        self.assertEqual(payload["suggestions"][0]["fundName"], "易方达蓝筹精选混合")
+        self.assertEqual(payload["suggestions"][0]["match_count"], 1)
+        self.assertIn("raw_text", payload["suggestions"][0])
+
+    @patch("services.analysis_api.ocr_import.search_funds")
+    def test_parse_holdings_without_match_keeps_query_and_zero_match_count(self, mock_search_funds) -> None:
+        mock_search_funds.return_value = []
+        payload = parse_holdings_from_ocr_text("未知基金名称\n¥888.88\n+12.34")
+        self.assertEqual(len(payload["suggestions"]), 1)
+        self.assertEqual(payload["suggestions"][0]["fundQuery"], "未知基金名称")
+        self.assertEqual(payload["suggestions"][0]["fundName"], "未知基金名称")
+        self.assertEqual(payload["suggestions"][0]["match_count"], 0)
+        self.assertTrue(payload["suggestions"][0]["raw_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,14 +25,28 @@ services/
 
 ## 本地运行
 
+前端现在使用 React + Vite 构建，Python 服务直接托管 `apps/web/dist`。
+
+首次启动或修改前端源码后，先构建前端：
+
+```powershell
+cd apps/web
+npm install
+npm run build
+```
+
+然后回到仓库根目录启动后端：
+
 ```powershell
 python -m services.analysis_api.server
 ```
 
 启动后访问：
 
-- Web 原型：`http://127.0.0.1:8080/`
+- Web 前端：`http://127.0.0.1:8080/`
 - 健康检查：`http://127.0.0.1:8080/api/v1/health`
+
+如果只改了 Python 接口、没有动前端源码，可以直接启动后端复用现有 `dist` 产物。
 
 ## 运行测试
 

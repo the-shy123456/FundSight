@@ -1,11 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .models import FundProfile
 from .real_data import build_real_fund_profile, is_real_fund_code
 from .sample_data import FUNDS
+
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_STORAGE_DIR = ROOT_DIR / ".fund-insight"
+DEFAULT_STORAGE_PATH = DEFAULT_STORAGE_DIR / "holdings.json"
 
 
 @dataclass(frozen=True)
@@ -21,7 +29,9 @@ DEFAULT_HOLDINGS: tuple[HoldingLot, ...] = (
     HoldingLot(fund_id="F001", shares=1200.0, unit_cost=1.018),
 )
 
-_current_holdings: list[HoldingLot] = list(DEFAULT_HOLDINGS)
+
+_holdings_storage_path = Path(os.environ.get("FUND_INSIGHT_HOLDINGS_PATH", DEFAULT_STORAGE_PATH))
+_current_holdings: list[HoldingLot] = []
 
 
 def get_holdings() -> tuple[HoldingLot, ...]:
@@ -32,12 +42,34 @@ def get_current_holdings() -> tuple[HoldingLot, ...]:
     return get_holdings()
 
 
-def reset_holdings() -> None:
+def get_holdings_storage_path() -> Path:
+    return _holdings_storage_path
+
+
+def set_holdings_storage_path(path: str | Path | None) -> Path:
+    global _holdings_storage_path
+    _holdings_storage_path = Path(path) if path else DEFAULT_STORAGE_PATH
+    _current_holdings[:] = list(_load_persisted_holdings())
+    return _holdings_storage_path
+
+
+def clear_holdings_storage() -> None:
+    try:
+        _holdings_storage_path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def reset_holdings(*, persist: bool = False) -> None:
     _current_holdings[:] = list(DEFAULT_HOLDINGS)
+    if persist:
+        _persist_holdings(get_holdings())
 
 
-def replace_holdings(holdings: tuple[HoldingLot, ...]) -> tuple[HoldingLot, ...]:
+def replace_holdings(holdings: tuple[HoldingLot, ...], *, persist: bool = True) -> tuple[HoldingLot, ...]:
     _current_holdings[:] = list(holdings)
+    if persist:
+        _persist_holdings(get_holdings())
     return get_holdings()
 
 
@@ -94,6 +126,40 @@ def _build_from_records(records: list[dict[str, Any]], funds: tuple[FundProfile,
     return holdings
 
 
+def _serialize_holdings(holdings: tuple[HoldingLot, ...]) -> list[dict[str, float | str]]:
+    return [
+        {
+            "fund_id": item.fund_id,
+            "shares": round(item.shares, 4),
+            "unit_cost": round(item.unit_cost, 4),
+        }
+        for item in holdings
+    ]
+
+
+def _persist_holdings(holdings: tuple[HoldingLot, ...]) -> None:
+    _holdings_storage_path.parent.mkdir(parents=True, exist_ok=True)
+    _holdings_storage_path.write_text(
+        json.dumps(_serialize_holdings(holdings), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_persisted_holdings() -> tuple[HoldingLot, ...]:
+    if not _holdings_storage_path.exists():
+        return DEFAULT_HOLDINGS
+    try:
+        payload = json.loads(_holdings_storage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_HOLDINGS
+    if not isinstance(payload, list):
+        return DEFAULT_HOLDINGS
+    try:
+        return _build_from_records([item for item in payload if isinstance(item, dict)], FUNDS)
+    except ValueError:
+        return DEFAULT_HOLDINGS
+
+
 def parse_holdings_text(text: str, funds: tuple[FundProfile, ...] = FUNDS) -> tuple[HoldingLot, ...]:
     rows: list[dict[str, Any]] = []
     for index, raw_line in enumerate(text.splitlines(), start=1):
@@ -128,3 +194,6 @@ def import_holdings_text(text: str, funds: tuple[FundProfile, ...] = FUNDS) -> t
 
 def import_holdings_payload(payload: object, funds: tuple[FundProfile, ...] = FUNDS) -> tuple[HoldingLot, ...]:
     return replace_holdings(parse_holdings_payload(payload, funds))
+
+
+_current_holdings[:] = list(_load_persisted_holdings())

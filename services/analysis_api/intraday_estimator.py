@@ -1,7 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+from datetime import datetime
 
 from .analytics import fund_metrics, quality_score
 from .models import FundProfile
+from .real_data import estimate_real_fund_intraday, is_real_fund_code
 
 
 INTRADAY_LABELS: tuple[str, ...] = (
@@ -69,7 +72,29 @@ def confidence_label(score: float) -> str:
     return "低"
 
 
-def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
+def _decorate_estimate_meta(
+    payload: dict[str, object],
+    *,
+    source: str,
+    source_label: str,
+    as_of: str,
+    is_real_data: bool,
+    disclosure_date: str = "",
+) -> dict[str, object]:
+    next_payload = dict(payload)
+    next_payload.setdefault("estimate_source", source)
+    next_payload.setdefault("estimate_source_label", source_label)
+    next_payload.setdefault("estimate_as_of", as_of)
+    next_payload.setdefault("is_real_data", is_real_data)
+    next_payload.setdefault("holdings_disclosure_date", disclosure_date)
+    next_payload.setdefault(
+        "estimate_scope_label",
+        "实时收益参考" if is_real_data else "原型估算",
+    )
+    return next_payload
+
+
+def _sample_estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
     config = _THEME_PROXY_LIBRARY.get(fund.theme, _THEME_PROXY_LIBRARY["均衡成长"])
     proxies = tuple(config["proxies"])
     style_drift = float(config["style_drift"])
@@ -146,19 +171,31 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
             "盘中估算仅用于方向参考，不替代基金公司官方净值。",
         ],
         "disclaimer": "盘中收益为样例级场内穿透估算，不代表真实净值与成交结果。",
+        "official_estimated_nav": round(estimated_nav, 4),
+        "official_estimated_return": estimated_return,
     }
 
-from .real_data import estimate_real_fund_intraday, is_real_fund_code
 
-
-_sample_estimate_fund_intraday = estimate_fund_intraday
-
-
-# 真实基金优先走官方估值 + 前十大持仓穿透，样例基金仍保留本地演示逻辑。
 def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
     if is_real_fund_code(fund.fund_id):
         try:
-            return estimate_real_fund_intraday(fund)
+            payload = estimate_real_fund_intraday(fund)
+            return _decorate_estimate_meta(
+                payload,
+                source="official_estimate_penetration",
+                source_label="官方估值+持仓穿透",
+                as_of=str(payload.get("estimate_as_of", datetime.now().strftime("%H:%M"))),
+                is_real_data=True,
+                disclosure_date=str(payload.get("holdings_disclosure_date", "")),
+            )
         except Exception:
             pass
-    return _sample_estimate_fund_intraday(fund)
+
+    payload = _sample_estimate_fund_intraday(fund)
+    return _decorate_estimate_meta(
+        payload,
+        source="theme_proxy_simulation",
+        source_label="主题代理估算",
+        as_of=datetime.now().strftime("%H:%M"),
+        is_real_data=False,
+    )

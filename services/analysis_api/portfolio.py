@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import defaultdict
 
@@ -80,12 +80,14 @@ def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict
         "cost_basis": round(cost_basis, 2),
         "latest_nav": latest_nav,
         "estimated_nav": round(float(estimate["estimated_nav"]), 4),
+        "official_estimated_nav": round(float(estimate.get("official_estimated_nav", estimate["estimated_nav"])), 4),
         "current_value": round(current_value, 2),
         "market_value": round(current_value, 2),
         "today_estimated_pnl": round(today_estimated_pnl, 2),
         "estimated_today_pnl": round(today_estimated_pnl, 2),
         "today_estimated_return": round(float(estimate["estimated_return"]), 4),
         "estimated_today_return": round(float(estimate["estimated_return"]), 4),
+        "official_estimated_return": round(float(estimate.get("official_estimated_return", estimate["estimated_return"])), 4),
         "total_pnl": round(total_pnl, 2),
         "total_profit": round(total_pnl, 2),
         "total_return": round(total_return, 4),
@@ -97,6 +99,13 @@ def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict
         "signal": {"label": estimate["confidence_label"], "reason": (diagnosis["strengths"][0] if diagnosis["strengths"] else diagnosis["cautions"][0])},
         "strengths": diagnosis["strengths"],
         "cautions": diagnosis["cautions"],
+        "estimate_source": estimate.get("estimate_source", "unknown"),
+        "estimate_source_label": estimate.get("estimate_source_label", "未知来源"),
+        "estimate_scope_label": estimate.get("estimate_scope_label", "收益参考"),
+        "estimate_as_of": estimate.get("estimate_as_of", ""),
+        "holdings_disclosure_date": estimate.get("holdings_disclosure_date", ""),
+        "is_real_data": bool(estimate.get("is_real_data", False)),
+        "estimate_disclaimer": estimate.get("disclaimer", ""),
     }
 
 
@@ -109,6 +118,12 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
     funds, active_holdings = _resolve_inputs(primary, holdings)
     positions = _positions(active_holdings, funds)
     if not positions:
+        empty_quality = {
+            "holding_count": 0,
+            "real_data_holding_count": 0,
+            "proxy_holding_count": 0,
+            "latest_estimate_as_of": "",
+        }
         return {
             "mode_label": "场内穿透估算",
             "as_of": __import__("datetime").datetime.now().strftime("%H:%M"),
@@ -125,12 +140,14 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
                 "total_profit": 0.0,
                 "total_return": 0.0,
                 "highest_exposure": None,
+                "data_quality": empty_quality,
             },
             "positions": [],
             "items": [],
             "exposures": [],
             "risk_exposures": [],
             "signals": [],
+            "data_quality": empty_quality,
             "disclaimer": "暂无持仓，可先导入样例仓位。",
         }
 
@@ -159,11 +176,25 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
 
     best_position = max(positions, key=lambda item: float(item["today_estimated_pnl"]))
     riskiest_position = max(positions, key=lambda item: abs(float(item["today_estimated_return"])))
+    real_data_holding_count = sum(1 for item in positions if bool(item["is_real_data"]))
+    proxy_holding_count = len(positions) - real_data_holding_count
+    latest_estimate_as_of = next((str(item["estimate_as_of"]) for item in positions if item.get("estimate_as_of")), "")
+    data_quality = {
+        "holding_count": len(positions),
+        "real_data_holding_count": real_data_holding_count,
+        "proxy_holding_count": proxy_holding_count,
+        "latest_estimate_as_of": latest_estimate_as_of,
+    }
+
     signals = [
         f"当前仓位最多集中在 {highest_exposure['theme']}，权重约 {highest_exposure['weight'] * 100:.1f}%。",
         f"盘中估算贡献最高的是 {best_position['name']}，今日参考收益 {best_position['today_estimated_pnl']:.2f} 元。",
         f"波动最明显的是 {riskiest_position['name']}，建议结合置信度 {riskiest_position['confidence_label']} 观察。",
     ]
+    if real_data_holding_count:
+        signals.append(f"当前有 {real_data_holding_count} 只基金使用真实估值参考，最近估值时间 {latest_estimate_as_of or '当前'}。")
+    if proxy_holding_count:
+        signals.append(f"仍有 {proxy_holding_count} 只基金使用原型代理估算，适合看方向，不适合替代官方净值。")
 
     summary = {
         "holding_count": len(positions),
@@ -180,7 +211,14 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
         "total_profit": round(total_pnl, 2),
         "total_return": round(total_return, 4),
         "highest_exposure": highest_exposure,
+        "data_quality": data_quality,
     }
+
+    disclaimer = "组合收益为盘中收益参考，不替代基金公司官方净值。"
+    if proxy_holding_count == 0:
+        disclaimer = "组合收益基于真实基金官方估值与持仓穿透联合估算，适合看盘中节奏，不替代最终净值。"
+    elif real_data_holding_count == 0:
+        disclaimer = "组合收益为样例级盘中代理估算，仅适合做方向参考。"
 
     return {
         "mode_label": "场内穿透估算",
@@ -191,7 +229,8 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
         "exposures": exposures,
         "risk_exposures": exposures,
         "signals": signals,
-        "disclaimer": "组合收益为样例级盘中代理估算，适合做方向参考，不替代基金公司官方净值。",
+        "data_quality": data_quality,
+        "disclaimer": disclaimer,
     }
 
 
@@ -202,6 +241,7 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
     contributions: list[dict[str, object]] = []
     previous_total = 0.0
     base_values: dict[str, float] = {}
+    real_data_count = 0
 
     for holding in active_holdings:
         fund = resolve_fund(holding.fund_id, funds)
@@ -212,6 +252,8 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
         previous_value = holding.shares * float(fund.nav_history[-1])
         previous_total += previous_value
         base_values[fund.fund_id] = previous_value
+        if bool(estimate.get("is_real_data", False)):
+            real_data_count += 1
 
         if not labels:
             labels = list(estimate["labels"])
@@ -228,6 +270,9 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
                 "today_estimated_pnl": round(previous_value * float(estimate["estimated_return"]), 2),
                 "confidence_label": estimate["confidence_label"],
                 "weight": 0.0,
+                "estimate_source_label": estimate.get("estimate_source_label", "未知来源"),
+                "estimate_as_of": estimate.get("estimate_as_of", ""),
+                "is_real_data": bool(estimate.get("is_real_data", False)),
             }
         )
 
@@ -244,6 +289,12 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
         "unit": "return",
     }
 
+    disclaimer = "组合盘中曲线由各持仓主题代理叠加生成，仅用于 MVP 演示。"
+    if contributions and real_data_count == len(contributions):
+        disclaimer = "组合盘中曲线基于真实基金估值参考聚合生成，可用于观察盘中节奏，不替代官方最终净值。"
+    elif real_data_count:
+        disclaimer = "组合盘中曲线混合了真实基金估值参考与原型代理估算，请重点关注来源标签。"
+
     return {
         "chart": chart,
         "labels": labels,
@@ -251,7 +302,7 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
         "estimated_pnl_series": [round(value, 2) for value in pnl_series],
         "estimated_return_series": return_series,
         "contributions": sorted(contributions, key=lambda item: abs(float(item["today_estimated_pnl"])), reverse=True),
-        "disclaimer": "组合盘中曲线由各持仓主题代理叠加生成，仅用于 MVP 演示。",
+        "disclaimer": disclaimer,
     }
 
 

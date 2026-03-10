@@ -1,20 +1,37 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+from pathlib import Path
+import re
 import threading
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from unittest.mock import patch
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
-from services.analysis_api.holdings import reset_holdings
+from services.analysis_api.holdings import (
+    clear_holdings_storage,
+    get_holdings_storage_path,
+    reset_holdings,
+    set_holdings_storage_path,
+)
 from services.analysis_api.server import FundInsightHandler
+
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+DIST_DIR = ROOT_DIR / "apps" / "web" / "dist"
+INDEX_HTML = DIST_DIR / "index.html"
+TEST_STORAGE_PATH = ROOT_DIR / ".tmp-tests" / "server-test.json"
 
 
 class ServerRouteTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self.original_storage_path = get_holdings_storage_path()
+        TEST_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        set_holdings_storage_path(TEST_STORAGE_PATH)
+        clear_holdings_storage()
         reset_holdings()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FundInsightHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -26,6 +43,8 @@ class ServerRouteTestCase(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=1)
         reset_holdings()
+        clear_holdings_storage()
+        set_holdings_storage_path(self.original_storage_path)
 
     def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         request = urllib.request.Request(
@@ -36,6 +55,40 @@ class ServerRouteTestCase(unittest.TestCase):
         )
         response = urllib.request.urlopen(request)
         return json.loads(response.read().decode("utf-8"))
+
+    def _read_dist_index(self) -> str:
+        return INDEX_HTML.read_text(encoding="utf-8")
+
+    def _read_first_dist_asset_path(self, extension: str) -> str:
+        content = self._read_dist_index()
+        matched = re.search(rf'(?:src|href)="(/assets/[^"]+\.{extension})"', content)
+        self.assertIsNotNone(matched)
+        return str(matched.group(1))
+
+    def test_root_route_serves_frontend_index(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/")
+        payload = response.read().decode("utf-8")
+        self.assertEqual(response.headers.get_content_type(), "text/html")
+        self.assertIn('id="root"', payload)
+
+    def test_static_asset_route_serves_frontend_asset(self) -> None:
+        asset_path = self._read_first_dist_asset_path("js")
+        response = urllib.request.urlopen(f"{self.base_url}{asset_path}")
+        payload = response.read().decode("utf-8")
+        self.assertEqual(response.status, 200)
+        self.assertIn("javascript", response.headers.get("Content-Type", ""))
+        self.assertTrue(payload)
+
+    def test_unknown_frontend_route_falls_back_to_index(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/workspace/portfolio")
+        payload = response.read().decode("utf-8")
+        self.assertEqual(response.headers.get_content_type(), "text/html")
+        self.assertIn('id="root"', payload)
+
+    def test_missing_asset_route_returns_404(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(f"{self.base_url}/assets/missing.js")
+        self.assertEqual(context.exception.code, 404)
 
     def test_snapshot_endpoint_returns_detail_contract(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/F001/snapshot")
@@ -58,6 +111,7 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("today_estimated_pnl", payload["summary"])
         self.assertTrue(payload["exposures"])
         self.assertEqual(payload["summary"]["holding_count"], len(payload["positions"]))
+        self.assertIn("data_quality", payload)
 
     def test_portfolio_intraday_endpoint_returns_chart(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/portfolio/intraday")
@@ -73,7 +127,6 @@ class ServerRouteTestCase(unittest.TestCase):
         )
         self.assertEqual(payload["summary"]["holding_count"], 2)
         self.assertEqual({item["fund_id"] for item in payload["positions"]}, {"F003", "F004"})
-
 
     def test_import_endpoint_accepts_holdings_payload(self) -> None:
         payload = self._post_json(
@@ -95,21 +148,105 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("estimated_nav", payload)
         self.assertTrue(payload["contributions"])
         self.assertIn("confidence", payload)
+        self.assertEqual(payload["estimate_source_label"], "主题代理估算")
+        self.assertFalse(payload["is_real_data"])
 
+    def test_real_fund_intraday_estimate_endpoint_returns_key_fields(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/intraday-estimate")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["fund_id"], "005827")
+        self.assertIn("estimated_nav", payload)
+        self.assertIn("latest_nav", payload)
+        self.assertIn("confidence", payload)
+        self.assertIn("contributions", payload)
+        self.assertEqual(payload["estimate_source_label"], "官方估值+持仓穿透")
+        self.assertTrue(payload["is_real_data"])
+
+    @patch("services.analysis_api.server.fetch_fund_catalog")
+    def test_funds_endpoint_returns_paginated_catalog(self, mock_catalog) -> None:
+        mock_catalog.return_value = {
+            "items": [
+                {
+                    "fund_id": "005827",
+                    "name": "易方达蓝筹精选混合",
+                    "category": "混合型",
+                    "theme": "蓝筹价值",
+                    "risk_level": "high",
+                    "manager": "张坤",
+                    "latest_nav": 1.8228,
+                },
+                {
+                    "fund_id": "161725",
+                    "name": "招商中证白酒指数(LOF)A",
+                    "category": "指数型",
+                    "theme": "白酒消费",
+                    "risk_level": "high",
+                    "manager": "侯昊",
+                    "latest_nav": 0.6545,
+                },
+            ],
+            "total": 19311,
+            "page": 2,
+            "page_size": 30,
+        }
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?page=2&page_size=30")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["page_size"], 30)
+        self.assertEqual(payload["total"], 19311)
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertTrue(all("fund_id" in item for item in payload["items"]))
+        self.assertTrue(all("name" in item for item in payload["items"]))
+        self.assertTrue(all("latest_nav" in item for item in payload["items"]))
+
+    def test_funds_search_endpoint_returns_field_complete_results(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/search?q={urllib.parse.quote('白酒')}")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("items", payload)
+        self.assertIn("total", payload)
+        self.assertGreaterEqual(payload["total"], 1)
+        first = payload["items"][0]
+        for key in ("fund_id", "name", "category", "theme", "risk_level"):
+            self.assertIn(key, first)
+
+    def test_funds_endpoint_supports_query_param(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?q={urllib.parse.quote('易方达')}")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("items", payload)
+        self.assertIn("total", payload)
+        self.assertGreaterEqual(payload["total"], 1)
+
+    def test_fund_search_endpoint_requires_q(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(f"{self.base_url}/api/v1/funds/search")
+        self.assertEqual(context.exception.code, 400)
 
     @patch("services.analysis_api.server.extract_holdings_from_image_data")
-    def test_holdings_ocr_endpoint_returns_suggestions(self, mock_ocr) -> None:
+    def test_holdings_ocr_endpoint_returns_suggestions_and_warnings(self, mock_ocr) -> None:
         mock_ocr.return_value = {
             "ocr_text": "华夏中证电网设备...",
-            "suggestions": [{"fundQuery": "001838", "fundName": "华夏中证电网设备主题ETF联接A", "amount": "1708.64", "profit": "90.52"}],
+            "suggestions": [
+                {
+                    "fundQuery": "001838",
+                    "fundName": "华夏中证电网设备主题ETF联接A",
+                    "amount": "1708.64",
+                    "profit": "90.52",
+                }
+            ],
             "warnings": ["OCR 为辅助识别，建议检查后再导入。"],
         }
         payload = self._post_json(
             "/api/v1/holdings/ocr",
             {"image_base64": "data:image/png;base64,ZmFrZQ=="},
         )
-        self.assertTrue(payload["suggestions"])
+        self.assertIn("ocr_text", payload)
+        self.assertIn("suggestions", payload)
         self.assertIn("warnings", payload)
+        self.assertEqual(payload["suggestions"][0]["fundQuery"], "001838")
+        self.assertEqual(payload["suggestions"][0]["fundName"], "华夏中证电网设备主题ETF联接A")
+        self.assertEqual(payload["suggestions"][0]["amount"], "1708.64")
+        self.assertEqual(payload["suggestions"][0]["profit"], "90.52")
+        self.assertTrue(payload["warnings"])
 
     def test_assistant_endpoint_returns_structured_answer(self) -> None:
         payload = self._post_json(
@@ -126,8 +263,6 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertTrue(payload["actions"])
         self.assertIn("confidence", payload)
 
-
-
     def test_assistant_endpoint_accepts_inline_holdings(self) -> None:
         payload = self._post_json(
             "/api/v1/assistant/ask",
@@ -141,43 +276,63 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIsNotNone(payload["holding_context"])
         self.assertEqual(payload["holding_context"]["shares"], 880)
 
+    def test_funds_endpoint_with_risk_level_returns_page_contract(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?risk_level=high&page=1&page_size=20")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("items", payload)
+        self.assertIn("total", payload)
+        self.assertIn("page", payload)
+        self.assertIn("page_size", payload)
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["page_size"], 20)
 
-    @patch("services.analysis_api.server.fetch_fund_catalog")
-    def test_funds_endpoint_returns_paginated_catalog(self, mock_catalog) -> None:
-        mock_catalog.return_value = {
-            "items": [
-                {"fund_id": "005827", "name": "易方达蓝筹精选混合", "category": "混合型", "theme": "蓝筹价值", "risk_level": "high", "latest_nav": 1.8228},
-                {"fund_id": "161725", "name": "招商中证白酒指数(LOF)A", "category": "指数型", "theme": "白酒消费", "risk_level": "high", "latest_nav": 0.6545},
+    def test_funds_search_endpoint_result_items_have_stable_shape(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/search?q={urllib.parse.quote('易方达')}")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertGreaterEqual(payload["total"], 1)
+        first = payload["items"][0]
+        for key in ("fund_id", "name", "category", "theme", "risk_level"):
+            self.assertIn(key, first)
+        self.assertTrue(str(first["fund_id"]))
+        self.assertTrue(str(first["name"]))
+
+    @patch("services.analysis_api.server.extract_holdings_from_image_data")
+    def test_holdings_ocr_endpoint_preserves_match_metadata(self, mock_ocr) -> None:
+        mock_ocr.return_value = {
+            "ocr_text": "易方达蓝筹精选混合",
+            "suggestions": [
+                {
+                    "fundQuery": "005827",
+                    "fundName": "易方达蓝筹精选混合",
+                    "amount": "3109.64",
+                    "profit": "65.62",
+                    "match_count": 1,
+                    "raw_text": "易方达蓝筹精选混合 ¥3109.64 +65.62",
+                }
             ],
-            "total": 19311,
-            "page": 2,
-            "page_size": 30,
+            "warnings": ["OCR 为辅助识别，建议检查后再导入。"],
         }
-        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?page=2&page_size=30")
-        payload = json.loads(response.read().decode("utf-8"))
-        self.assertEqual(payload["page"], 2)
-        self.assertEqual(payload["page_size"], 30)
-        self.assertEqual(payload["total"], 19311)
-        self.assertEqual(len(payload["items"]), 2)
+        payload = self._post_json(
+            "/api/v1/holdings/ocr",
+            {"image_base64": "data:image/png;base64,ZmFrZQ=="},
+        )
+        self.assertEqual(payload["suggestions"][0]["match_count"], 1)
+        self.assertTrue(payload["suggestions"][0]["raw_text"])
 
-    def test_funds_endpoint_supports_query_param(self) -> None:
-        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?q={urllib.parse.quote('白酒')}")
-        payload = json.loads(response.read().decode("utf-8"))
-        self.assertIn("items", payload)
-        self.assertIn("total", payload)
+    def test_assistant_endpoint_confidence_shape_is_stable(self) -> None:
+        payload = self._post_json(
+            "/api/v1/assistant/ask",
+            {
+                "question": "为什么最近会跌，接下来什么时候更适合卖？",
+                "fund_id": "F003",
+                "cash_available": 1800,
+            },
+        )
+        self.assertIn("confidence", payload)
+        self.assertIn("score", payload["confidence"])
+        self.assertIn("label", payload["confidence"])
+        self.assertIn("reason", payload["confidence"])
 
-    def test_fund_search_endpoint_returns_results(self) -> None:
-        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/search?q={urllib.parse.quote('科技')}")
-        payload = json.loads(response.read().decode("utf-8"))
-        self.assertIn("items", payload)
-        self.assertIn("total", payload)
-
-
-
-    def test_fund_search_endpoint_requires_q(self) -> None:
-        with self.assertRaises(urllib.error.HTTPError) as context:
-            urllib.request.urlopen(f"{self.base_url}/api/v1/funds/search")
-        self.assertEqual(context.exception.code, 400)
 
 if __name__ == "__main__":
     unittest.main()

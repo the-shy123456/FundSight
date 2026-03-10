@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -6,3 +6,6 @@ __pycache__/
 .env
 .DS_Store
 Thumbs.db
+apps/web/node_modules/
+.fund-insight/
+.tmp-tests/

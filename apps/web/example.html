@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI实时基金投研系统</title>
+    <!-- 使用 Tailwind CSS 进行快速样式构建 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 FontAwesome 图标 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .text-up { color: #f43f5e; }
+        .text-down { color: #10b981; }
+        .bg-up { background-color: #f43f5e; }
+        .bg-down { background-color: #10b981; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .modal-enter { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans h-screen flex flex-col overflow-hidden relative">
+
+    <!-- ================= 顶部导航栏 ================= -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 z-10 flex-shrink-0">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center text-blue-600 font-bold text-xl">
+                        <i class="fa-solid fa-chart-line mr-2"></i> AI-Fund Matrix
+                    </div>
+                    <div class="ml-10 flex space-x-8">
+                        <button onclick="switchTab('portfolio')" id="nav-portfolio" class="nav-btn border-blue-500 text-gray-900 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">我的持仓</button>
+                        <button onclick="switchTab('library')" id="nav-library" class="nav-btn border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">基金库</button>
+                        <button onclick="switchTab('config')" id="nav-config" class="nav-btn border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">模型配置</button>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <span class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100">
+                        <i class="fa-solid fa-bolt text-yellow-500 mr-1"></i> 场内穿透实时引擎: 运行中
+                    </span>
+                    <img class="h-8 w-8 rounded-full ml-4 border border-gray-200" src="https://ui-avatars.com/api/?name=User&background=0D8ABC&color=fff" alt="User">
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ================= 主体内容区 ================= -->
+    <main class="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full">
+
+        <!-- ================= 页面 1：我的持仓 ================= -->
+        <div id="page-portfolio" class="page-section h-full flex flex-col">
+            <!-- 持仓总览 -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-gray-100">
+                    <p class="text-sm text-gray-500 mb-1">总资产 (元)</p>
+                    <p class="text-3xl font-bold" id="total-assets">128,450.00</p>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-gray-100">
+                    <p class="text-sm text-gray-500 mb-1">今日实时收益 (元) <span class="text-xs bg-red-50 text-red-600 px-1 rounded border border-red-100">穿透估算</span></p>
+                    <p class="text-3xl font-bold text-up">+1,245.80</p>
+                    <p class="text-sm text-up mt-1"><i class="fa-solid fa-arrow-up"></i> +0.98%</p>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-gray-100">
+                    <p class="text-sm text-gray-500 mb-1">累计总收益 (元)</p>
+                    <p class="text-3xl font-bold text-up">+15,840.50</p>
+                    <p class="text-sm text-up mt-1"><i class="fa-solid fa-arrow-up"></i> +14.07%</p>
+                </div>
+            </div>
+
+            <!-- 下方左右布局 -->
+            <div class="flex flex-col md:flex-row gap-6 flex-1 min-h-[500px]">
+                <!-- 左侧：持仓列表 (3/4) -->
+                <div class="w-full md:w-3/4 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
+                    <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                        <h2 class="text-lg font-bold text-gray-800">持仓明细 (实时)</h2>
+                        <div class="space-x-3">
+                            <button onclick="openImportModal()" class="bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-100 transition-all font-medium">
+                                <i class="fa-solid fa-folder-plus mr-1"></i> 导入持仓
+                            </button>
+                            <button class="text-sm text-gray-500 hover:text-gray-800 px-2 py-1.5"><i class="fa-solid fa-rotate"></i> 刷新</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto flex-1">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">基金名称/代码</th>
+                                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">持仓金额</th>
+                                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">实时估值</th>
+                                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">今日估算收益</th>
+                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="portfolio-tbody" class="bg-white divide-y divide-gray-100">
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">招商中证白酒指数C</div>
+                                        <div class="text-xs text-gray-500 mt-0.5">012414 <span class="bg-blue-50 text-blue-600 px-1 py-0.5 rounded text-[10px] ml-1">穿透</span></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">50,000.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-up">+1.52%</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-up">+760.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                                        <button class="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium" onclick="askAI('分析一下招商中证白酒今天的走势？')"><i class="fa-solid fa-robot mr-1"></i>AI分析</button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">诺安成长混合</div>
+                                        <div class="text-xs text-gray-500 mt-0.5">320007 <span class="bg-blue-50 text-blue-600 px-1 py-0.5 rounded text-[10px] ml-1">穿透</span></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">45,000.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-down">-0.85%</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-down">-382.50</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                                        <button class="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium" onclick="askAI('诺安成长今天为什么跌？半导体板块怎么了？')"><i class="fa-solid fa-robot mr-1"></i>AI分析</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 右侧：AI 助手 (1/4) -->
+                <div class="w-full md:w-1/4 bg-white rounded-xl shadow-sm border border-indigo-100 flex flex-col overflow-hidden relative">
+                    <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500"></div>
+                    <div class="p-4 border-b border-gray-100 flex items-center bg-indigo-50/30">
+                        <div class="bg-gradient-to-br from-blue-500 to-purple-600 text-white p-2 rounded-lg mr-3 shadow-sm"><i class="fa-solid fa-brain"></i></div>
+                        <div>
+                            <h2 class="text-md font-bold text-gray-800">金融分析 Agent</h2>
+                            <p class="text-[11px] text-gray-500 flex items-center"><span class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1 animate-pulse"></span>联网与深度投研</p>
+                        </div>
+                    </div>
+                    
+                    <div id="chat-box" class="flex-1 p-4 overflow-y-auto no-scrollbar flex flex-col space-y-4 bg-gray-50/50">
+                        <div class="flex items-start">
+                            <div class="bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed">
+                                你好！我是你的专属 AI 金融助理。我已经读取了你的持仓和当前的市场实时行情（上证指数实时 3045.21，<span class="text-up font-bold">+0.52%</span>）。有什么可以帮你的？
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-3 bg-white border-t border-gray-100">
+                        <div class="relative flex items-center">
+                            <input type="text" id="ai-input" class="w-full bg-gray-100 border border-transparent rounded-full py-2.5 pl-4 pr-12 text-sm focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="提问...">
+                            <button onclick="sendChatMessage()" class="absolute right-1.5 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700">
+                                <i class="fa-solid fa-paper-plane text-xs w-4 h-4 flex items-center justify-center"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= 页面 2：基金库 ================= -->
+        <div id="page-library" class="page-section hidden h-full flex flex-col">
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex items-center justify-between">
+                <h2 class="text-lg font-bold text-gray-800">全市场基金库概览</h2>
+                <div class="flex gap-4 w-1/2">
+                    <input type="text" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm" placeholder="输入基金代码/拼音搜索...">
+                    <button class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium">搜索</button>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 flex-1 flex items-center justify-center text-gray-400">
+                基金库数据模块 (Demo暂未填充全部数据)
+            </div>
+        </div>
+
+        <!-- ================= 页面 3：模型配置 ================= -->
+        <div id="page-config" class="page-section hidden h-full flex items-center justify-center">
+            <div class="bg-white p-8 rounded-xl shadow-md border border-gray-100 w-full max-w-2xl relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-full h-1 bg-blue-500"></div>
+                <div class="flex items-center mb-6 border-b border-gray-100 pb-4">
+                    <div class="bg-blue-50 text-blue-600 p-3 rounded-lg mr-4 border border-blue-100"><i class="fa-solid fa-microchip text-xl"></i></div>
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-800">AI Agent 大模型配置</h2>
+                        <p class="text-sm text-gray-500 mt-1">配置您自己的 LLM API，全面兼容 OpenAI 接口规范。</p>
+                    </div>
+                </div>
+                <form onsubmit="saveConfig(event)" class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">接口 Base URL</label>
+                        <input type="text" value="https://api.openai.com/v1" class="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
+                        <input type="password" value="sk-1234567890abcdef" class="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">Model Name</label>
+                        <input type="text" value="gpt-4-turbo" class="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono">
+                    </div>
+                    <div class="pt-4 flex justify-between border-t border-gray-100">
+                        <button type="button" class="text-sm font-medium text-gray-600 border border-gray-300 px-5 py-2 rounded-lg"><i class="fa-solid fa-flask text-blue-500 mr-2"></i>测试</button>
+                        <button type="submit" class="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold">保存配置</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- ================= 导入持仓 弹窗 Modal ================= -->
+    <div id="import-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-60 backdrop-blur-sm transition-opacity">
+        <div class="modal-enter bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden flex flex-col">
+            
+            <!-- Modal 头部 -->
+            <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                <h3 class="text-lg font-bold text-gray-800 flex items-center"><i class="fa-solid fa-folder-plus text-blue-500 mr-2"></i>导入我的持仓</h3>
+                <button onclick="closeImportModal()" class="text-gray-400 hover:text-gray-700"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            
+            <!-- Modal Tabs -->
+            <div class="flex border-b border-gray-200 bg-gray-50">
+                <button onclick="switchImportTab('manual')" id="tab-manual" class="flex-1 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 bg-white">手动搜索添加</button>
+                <button onclick="switchImportTab('ocr')" id="tab-ocr" class="flex-1 py-3 text-sm font-bold text-gray-500 border-b-2 border-transparent hover:bg-gray-100">
+                    截图智能识别 <span class="bg-gradient-to-r from-red-500 to-pink-500 text-white text-[10px] px-1 rounded ml-1"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</span>
+                </button>
+            </div>
+
+            <!-- Modal 内容 -->
+            <div class="p-6">
+                
+                <!-- Tab 1: 手动添加 -->
+                <div id="import-manual-content" class="space-y-4">
+                    <div class="relative">
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">基金名称或代码</label>
+                        <div class="relative">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-gray-400"></i>
+                            <input type="text" id="search-fund-input" oninput="showFundSuggestions()" class="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none" placeholder="输入如：易方达蓝筹精选 或 005827">
+                        </div>
+                        
+                        <!-- 搜索下拉结果 -->
+                        <div id="fund-suggestions" class="hidden absolute z-20 w-full mt-1 bg-white shadow-lg border border-gray-200 rounded-lg max-h-40 overflow-y-auto">
+                            <div class="px-4 py-3 hover:bg-blue-50 cursor-pointer text-sm flex justify-between" onclick="selectFund('易方达蓝筹精选混合', '005827')">
+                                <span class="font-medium">易方达蓝筹精选混合</span><span class="text-xs text-gray-500">005827</span>
+                            </div>
+                            <div class="px-4 py-3 hover:bg-blue-50 cursor-pointer text-sm flex justify-between" onclick="selectFund('景顺长城鼎益混合', '162605')">
+                                <span class="font-medium">景顺长城鼎益混合</span><span class="text-xs text-gray-500">162605</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex gap-4">
+                        <div class="flex-1">
+                            <label class="block text-sm font-semibold text-gray-700 mb-1">持有金额 (元)</label>
+                            <input type="number" id="hold-amount" class="w-full px-3 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 focus:bg-white outline-none" placeholder="10000.00">
+                        </div>
+                        <div class="flex-1">
+                            <label class="block text-sm font-semibold text-gray-700 mb-1">累计收益 (元)</label>
+                            <input type="number" id="hold-profit" class="w-full px-3 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 focus:bg-white outline-none" placeholder="+0.00 / -0.00">
+                        </div>
+                    </div>
+                    <button onclick="addSingleFund()" class="w-full mt-2 bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 text-sm font-bold flex justify-center items-center">
+                        <i class="fa-solid fa-plus mr-2"></i>确认添加
+                    </button>
+                </div>
+
+                <!-- Tab 2: OCR 识别 -->
+                <div id="import-ocr-content" class="hidden space-y-4">
+                    <!-- 上传区 -->
+                    <div class="border-2 border-dashed border-blue-300 bg-blue-50/50 rounded-xl p-8 text-center hover:bg-blue-50 cursor-pointer" id="upload-area" onclick="simulateOCR()">
+                        <div class="w-14 h-14 bg-white rounded-full shadow-sm flex items-center justify-center mx-auto mb-3 border border-blue-100">
+                            <i class="fa-solid fa-cloud-arrow-up text-2xl text-blue-500"></i>
+                        </div>
+                        <p class="text-sm font-bold text-gray-700">点击上传或拖拽截图到此处</p>
+                        <p class="text-xs text-gray-500 mt-1">支持 支付宝、天天基金、同花顺 等APP持仓截图</p>
+                    </div>
+                    
+                    <!-- 识别结果区 -->
+                    <div id="ocr-result-area" class="hidden mt-2">
+                        <h4 class="text-sm font-bold text-gray-800 mb-2 flex items-center text-green-600">
+                            <i class="fa-solid fa-circle-check mr-2"></i> AI 识别完成，共发现 2 支基金：
+                        </h4>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="px-4 py-2 text-left font-semibold text-gray-600">识别基金</th>
+                                        <th class="px-4 py-2 text-right font-semibold text-gray-600">持仓金额</th>
+                                        <th class="px-4 py-2 text-center font-semibold text-gray-600">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="bg-white divide-y divide-gray-100">
+                                    <tr>
+                                        <td class="px-4 py-2 font-medium">中欧医疗健康C <span class="text-xs text-gray-400 block">003096</span></td>
+                                        <td class="px-4 py-2 text-right text-gray-800 font-medium">12,500.00</td>
+                                        <td class="px-4 py-2 text-center text-red-500 cursor-pointer"><i class="fa-solid fa-trash"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="px-4 py-2 font-medium">广发纳斯达克100 <span class="text-xs text-gray-400 block">270042</span></td>
+                                        <td class="px-4 py-2 text-right text-gray-800 font-medium">30,000.00</td>
+                                        <td class="px-4 py-2 text-center text-red-500 cursor-pointer"><i class="fa-solid fa-trash"></i></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <button onclick="confirmImportBatch()" class="w-full mt-4 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 text-sm font-bold">
+                            批量导入至我的持仓
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= 交互逻辑 (JavaScript) ================= -->
+    <script>
+        // 1. 页面 Tab 切换逻辑
+        function switchTab(tabId) {
+            document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
+            document.getElementById('page-' + tabId).classList.remove('hidden');
+
+            document.querySelectorAll('.nav-btn').forEach(el => {
+                el.classList.remove('border-blue-500', 'text-gray-900');
+                el.classList.add('border-transparent', 'text-gray-500');
+            });
+            const activeBtn = document.getElementById('nav-' + tabId);
+            activeBtn.classList.remove('border-transparent', 'text-gray-500');
+            activeBtn.classList.add('border-blue-500', 'text-gray-900');
+        }
+
+        // 2. AI 助手逻辑
+        const chatBox = document.getElementById('chat-box');
+        const aiInput = document.getElementById('ai-input');
+
+        function askAI(question) {
+            aiInput.value = question;
+            sendChatMessage();
+        }
+
+        function sendChatMessage() {
+            const text = aiInput.value.trim();
+            if (!text) return;
+
+            appendMessage(text, 'user');
+            aiInput.value = '';
+            
+            const typingId = 'typing-' + Date.now();
+            appendTyping(typingId);
+            scrollToBottom();
+
+            setTimeout(() => {
+                document.getElementById(typingId).remove();
+                let reply = `已为您查询相关数据。从穿透盘面看，该板块目前处于震荡调整期，建议结合您的成本价进行判断。需要我为您生成一份详细的技术面和基本面评估报告吗？`;
+                
+                if(text.includes('白酒')) {
+                    reply = `【穿透分析 - 招商中证白酒】<br>成分股（贵州茅台+1.2%，五粮液+2.1%）强势，当前板块主力资金净流入。<br><b>建议：</b> 暂不减仓，可继续持有观望。`;
+                } else if(text.includes('诺安') || text.includes('半导体')) {
+                    reply = `【穿透分析 - 诺安成长混合】<br>半导体板块受外围消息面情绪影响走低，但盘口有资金承接。<br><b>建议：</b> 若下午跌幅超-2%，可考虑定投摊薄成本。`;
+                }
+                appendMessage(reply, 'ai');
+                scrollToBottom();
+            }, 1200);
+        }
+
+        function appendMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = sender === 'user' ? 'flex items-end justify-end' : 'flex items-start';
+            const msgBubble = document.createElement('div');
+            
+            if (sender === 'user') {
+                msgBubble.className = 'bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%]';
+                msgBubble.innerText = text;
+            } else {
+                msgBubble.className = 'bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed';
+                msgBubble.innerHTML = text;
+            }
+            div.appendChild(msgBubble);
+            chatBox.appendChild(div);
+        }
+
+        function appendTyping(id) {
+            const div = document.createElement('div');
+            div.id = id;
+            div.className = 'flex items-start';
+            div.innerHTML = `<div class="bg-white border border-gray-200 text-gray-500 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm flex items-center"><i class="fa-solid fa-circle-notch fa-spin text-blue-500 mr-2"></i> 大模型思考中...</div>`;
+            chatBox.appendChild(div);
+        }
+
+        function scrollToBottom() { chatBox.scrollTop = chatBox.scrollHeight; }
+
+        aiInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') sendChatMessage();
+        });
+
+        // 3. 导入弹窗 Modal 逻辑
+        const importModal = document.getElementById('import-modal');
+        function openImportModal() { importModal.classList.remove('hidden'); }
+        function closeImportModal() { importModal.classList.add('hidden'); }
+
+        function switchImportTab(tab) {
+            const manualContent = document.getElementById('import-manual-content');
+            const ocrContent = document.getElementById('import-ocr-content');
+            const tabManual = document.getElementById('tab-manual');
+            const tabOcr = document.getElementById('tab-ocr');
+
+            if (tab === 'manual') {
+                manualContent.classList.remove('hidden');
+                ocrContent.classList.add('hidden');
+                tabManual.className = "flex-1 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 bg-white";
+                tabOcr.className = "flex-1 py-3 text-sm font-bold text-gray-500 border-b-2 border-transparent hover:bg-gray-100";
+            } else {
+                manualContent.classList.add('hidden');
+                ocrContent.classList.remove('hidden');
+                tabOcr.className = "flex-1 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 bg-white";
+                tabManual.className = "flex-1 py-3 text-sm font-bold text-gray-500 border-b-2 border-transparent hover:bg-gray-100";
+            }
+        }
+
+        function showFundSuggestions() {
+            const val = document.getElementById('search-fund-input').value;
+            const sugg = document.getElementById('fund-suggestions');
+            if(val.length > 0) sugg.classList.remove('hidden');
+            else sugg.classList.add('hidden');
+        }
+
+        function selectFund(name, code) {
+            document.getElementById('search-fund-input').value = name + ' (' + code + ')';
+            document.getElementById('fund-suggestions').classList.add('hidden');
+        }
+
+        function addSingleFund() {
+            const inputVal = document.getElementById('search-fund-input').value;
+            const amt = document.getElementById('hold-amount').value || '0';
+            if(!inputVal) return alert('请输入基金名称！');
+            
+            const tbody = document.getElementById('portfolio-tbody');
+            tbody.insertAdjacentHTML('beforeend', `
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-medium text-gray-900">${inputVal.split('(')[0]}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">导入 <span class="bg-gray-100 text-gray-600 px-1 py-0.5 rounded text-[10px] ml-1">待计算</span></div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">${Number(amt).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-400">--</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-400">--</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                        <button class="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium" onclick="askAI('分析一下刚导入的这支基金？')"><i class="fa-solid fa-robot mr-1"></i>AI分析</button>
+                    </td>
+                </tr>
+            `);
+            closeImportModal();
+            document.getElementById('search-fund-input').value = '';
+            document.getElementById('hold-amount').value = '';
+        }
+
+        function simulateOCR() {
+            const uploadArea = document.getElementById('upload-area');
+            uploadArea.innerHTML = `
+                <div class="w-14 h-14 bg-white rounded-full shadow-sm flex items-center justify-center mx-auto mb-3 border border-blue-100">
+                    <i class="fa-solid fa-spinner fa-spin text-2xl text-blue-500"></i>
+                </div>
+                <p class="text-sm font-bold text-gray-700">视觉模型提取中...</p>
+            `;
+            setTimeout(() => {
+                uploadArea.classList.add('hidden');
+                document.getElementById('ocr-result-area').classList.remove('hidden');
+            }, 1500);
+        }
+
+        function confirmImportBatch() {
+            const tbody = document.getElementById('portfolio-tbody');
+            const html = `
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-medium text-gray-900">中欧医疗健康混合C</div>
+                        <div class="text-xs text-gray-500 mt-0.5">003096 <span class="bg-blue-50 text-blue-600 px-1 py-0.5 rounded text-[10px] ml-1">穿透</span></div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">12,500.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-down">-0.50%</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-down">-62.50</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center"><button class="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium"><i class="fa-solid fa-robot mr-1"></i>AI分析</button></td>
+                </tr>
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-medium text-gray-900">广发纳斯达克100ETF</div>
+                        <div class="text-xs text-gray-500 mt-0.5">270042 <span class="bg-yellow-50 text-yellow-600 border border-yellow-200 px-1 py-0.5 rounded text-[10px] ml-1">QDII</span></div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">30,000.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-up">+1.20%</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-up">+360.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center"><button class="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium"><i class="fa-solid fa-robot mr-1"></i>AI分析</button></td>
+                </tr>`;
+            tbody.insertAdjacentHTML('beforeend', html);
+            
+            closeImportModal();
+            // 重置 OCR 界面
+            document.getElementById('upload-area').classList.remove('hidden');
+            document.getElementById('upload-area').innerHTML = `
+                <div class="w-14 h-14 bg-white rounded-full shadow-sm flex items-center justify-center mx-auto mb-3 border border-blue-100">
+                    <i class="fa-solid fa-cloud-arrow-up text-2xl text-blue-500"></i>
+                </div>
+                <p class="text-sm font-bold text-gray-700">点击上传或拖拽截图到此处</p>
+                <p class="text-xs text-gray-500 mt-1">支持 支付宝、天天基金、同花顺 等APP持仓截图</p>`;
+            document.getElementById('ocr-result-area').classList.add('hidden');
+        }
+
+        // 4. 配置保存模拟
+        function saveConfig(e) {
+            e.preventDefault();
+            const btn = e.target.querySelector('button[type="submit"]');
+            btn.innerHTML = '保存成功！';
+            btn.classList.replace('bg-blue-600', 'bg-green-600');
+            setTimeout(() => {
+                btn.innerHTML = '保存配置';
+                btn.classList.replace('bg-green-600', 'bg-blue-600');
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
