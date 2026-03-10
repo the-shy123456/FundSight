@@ -17,6 +17,7 @@ from services.analysis_api.holdings import (
     reset_holdings,
     set_holdings_storage_path,
 )
+from services.analysis_api.models import FundProfile
 from services.analysis_api.server import FundInsightHandler
 
 
@@ -161,6 +162,39 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("contributions", payload)
         self.assertEqual(payload["estimate_source_label"], "官方估值+持仓穿透")
         self.assertTrue(payload["is_real_data"])
+
+    @patch("services.analysis_api.intraday_estimator.fetch_fund_estimate")
+    @patch("services.analysis_api.intraday_estimator.estimate_real_fund_intraday")
+    @patch("services.analysis_api.holdings.build_real_fund_profile")
+    def test_real_fund_intraday_estimate_falls_back_to_official_estimate(
+        self,
+        mock_build_profile,
+        mock_estimate_real,
+        mock_fetch_estimate,
+    ) -> None:
+        mock_build_profile.return_value = FundProfile(
+            fund_id="005827",
+            name="易方达蓝筹精选混合",
+            category="混合型",
+            risk_level="high",
+            manager="张坤",
+            manager_tenure_years=5.2,
+            fee_rate=0.015,
+            theme="蓝筹价值",
+            nav_history=(1.0, 1.01, 1.02, 1.03),
+        )
+        mock_estimate_real.side_effect = RuntimeError("penetration failed")
+        mock_fetch_estimate.return_value = {
+            "estimated_return": 0.0123,
+            "latest_nav": 1.2345,
+            "estimated_nav": 1.2496,
+            "gztime": "2026-03-10 10:30",
+        }
+
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/intraday-estimate")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(payload["is_real_data"])
+        self.assertEqual(payload["estimate_source_label"], "官方实时估值(天天基金)")
 
     @patch("services.analysis_api.server.fetch_fund_catalog")
     def test_funds_endpoint_returns_paginated_catalog(self, mock_catalog) -> None:

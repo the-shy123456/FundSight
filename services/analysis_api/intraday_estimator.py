@@ -4,7 +4,7 @@ from datetime import datetime
 
 from .analytics import fund_metrics, quality_score
 from .models import FundProfile
-from .real_data import estimate_real_fund_intraday, is_real_fund_code
+from .real_data import estimate_real_fund_intraday, fetch_fund_estimate, is_real_fund_code
 
 
 INTRADAY_LABELS: tuple[str, ...] = (
@@ -176,6 +176,65 @@ def _sample_estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
     }
 
 
+def _build_official_estimate_only_payload(fund: FundProfile) -> dict[str, object]:
+    estimate = fetch_fund_estimate(fund.fund_id)
+    official_return = round(float(estimate.get("estimated_return", 0.0)), 4)
+    latest_nav = round(float(estimate.get("latest_nav", 0.0)), 4)
+    estimated_nav = round(float(estimate.get("estimated_nav", latest_nav)), 4)
+    raw_time = str(estimate.get("gztime", "")).strip()
+    estimate_as_of = raw_time.split(" ")[-1][:5] if raw_time else "当前"
+    labels = ["昨收", "当前"]
+    series = [
+        {"name": "官方估算收益率", "values": [0.0, official_return]},
+        {"name": "昨日净值基准", "values": [0.0, 0.0]},
+    ]
+    confidence = {
+        "score": 0.66,
+        "label": "中",
+        "reason": "穿透失败，退回官方估值。",
+    }
+    contributions = [
+        {
+            "name": "官方实时估值",
+            "code": fund.fund_id,
+            "weight": 1.0,
+            "proxy_return": official_return,
+            "contribution": official_return,
+            "price": estimated_nav,
+        }
+    ]
+    display_time = raw_time or "当前"
+
+    return {
+        "fund_id": fund.fund_id,
+        "fund_name": fund.name,
+        "theme": fund.theme,
+        "latest_nav": latest_nav,
+        "estimated_nav": estimated_nav,
+        "official_estimated_nav": estimated_nav,
+        "estimated_return": official_return,
+        "estimated_intraday_return": official_return,
+        "official_estimated_return": official_return,
+        "estimated_return_series": [0.0, official_return],
+        "labels": labels,
+        "series": series,
+        "chart": {"labels": labels, "series": series, "unit": "return"},
+        "contributions": contributions,
+        "confidence": confidence,
+        "confidence_meta": confidence,
+        "confidence_label": str(confidence["label"]),
+        "proxy_note": "穿透失败，当前仅采用天天基金官方实时估值作为盘中参考。",
+        "estimate_as_of": estimate_as_of,
+        "holdings_disclosure_date": "",
+        "observations": [
+            f"官方估值收益 {official_return * 100:.2f}% ，估值时间 {display_time}。",
+            "穿透数据暂不可用，盘中仅显示官方实时估值。",
+            "盘中估值仅供参考，不代表基金公司最终净值与成交结果。",
+        ],
+        "disclaimer": "盘中收益仅基于天天基金官方实时估值，穿透数据暂不可用，最终以基金公司净值为准。",
+    }
+
+
 def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
     if is_real_fund_code(fund.fund_id):
         try:
@@ -189,7 +248,15 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
                 disclosure_date=str(payload.get("holdings_disclosure_date", "")),
             )
         except Exception:
-            pass
+            payload = _build_official_estimate_only_payload(fund)
+            return _decorate_estimate_meta(
+                payload,
+                source="official_estimate_only",
+                source_label="官方实时估值(天天基金)",
+                as_of=str(payload.get("estimate_as_of", datetime.now().strftime("%H:%M"))),
+                is_real_data=True,
+                disclosure_date=str(payload.get("holdings_disclosure_date", "")),
+            )
 
     payload = _sample_estimate_fund_intraday(fund)
     return _decorate_estimate_meta(
