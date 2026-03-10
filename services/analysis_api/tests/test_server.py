@@ -114,6 +114,11 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertEqual(payload["summary"]["holding_count"], len(payload["positions"]))
         self.assertIn("data_quality", payload)
 
+    def test_portfolio_endpoint_rejects_invalid_estimate_mode(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(f"{self.base_url}/api/v1/portfolio?estimate_mode=invalid")
+        self.assertEqual(context.exception.code, 400)
+
     def test_portfolio_intraday_endpoint_returns_chart(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/portfolio/intraday")
         payload = json.loads(response.read().decode("utf-8"))
@@ -186,6 +191,12 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("confidence", payload)
         self.assertEqual(payload["estimate_source_label"], "主题代理估算")
         self.assertFalse(payload["is_real_data"])
+
+    def test_fund_intraday_estimate_endpoint_returns_estimate_mode(self) -> None:
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/F003/intraday-estimate?estimate_mode=auto")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("estimate_mode", payload)
+        self.assertEqual(payload["estimate_mode"], "theme_proxy")
 
     def test_real_fund_intraday_estimate_endpoint_returns_key_fields(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/intraday-estimate")

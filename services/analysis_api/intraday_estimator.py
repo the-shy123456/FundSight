@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .analytics import fund_metrics, quality_score
 from .models import FundProfile
@@ -19,6 +20,138 @@ INTRADAY_LABELS: tuple[str, ...] = (
     "14:30",
     "15:00",
 )
+
+_ESTIMATE_MODE_LABELS: dict[str, str] = {
+    "auto": "自动",
+    "official": "官方",
+    "penetration": "穿透",
+    "theme_proxy": "主题代理",
+}
+
+_DISPLAY_SOURCE_LABELS: dict[str, str] = {
+    "official": "官方估值",
+    "penetration": "穿透估算",
+}
+
+_ESTIMATE_MODES: set[str] = {"auto", "official", "penetration"}
+
+
+def _normalize_estimate_mode(value: str) -> str:
+    mode = str(value or "auto").strip().lower()
+    return mode if mode in _ESTIMATE_MODES else "auto"
+
+
+def _now_shanghai() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+
+def _is_china_trading_hours(now: datetime | None = None) -> bool:
+    current = now or _now_shanghai()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    else:
+        current = current.astimezone(ZoneInfo("Asia/Shanghai"))
+    if current.weekday() >= 5:
+        return False
+    minutes = current.hour * 60 + current.minute
+    morning_start = 9 * 60 + 30
+    morning_end = 11 * 60 + 30
+    afternoon_start = 13 * 60
+    afternoon_end = 15 * 60
+    return (morning_start <= minutes <= morning_end) or (afternoon_start <= minutes <= afternoon_end)
+
+
+def _parse_estimate_time(value: str, now: datetime) -> datetime | None:
+    clean = str(value or "").strip()
+    if not clean or clean in {"当前", "未知"}:
+        return None
+    candidates = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%H:%M:%S",
+        "%H:%M",
+    )
+    for fmt in candidates:
+        try:
+            parsed = datetime.strptime(clean, fmt)
+        except ValueError:
+            continue
+        if fmt.startswith("%H"):
+            parsed = parsed.replace(year=now.year, month=now.month, day=now.day)
+        return parsed.replace(tzinfo=now.tzinfo)
+    return None
+
+
+def _has_numeric(value: object) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _official_estimate_stale(payload: dict[str, object], now: datetime) -> bool:
+    estimate_time = _parse_estimate_time(str(payload.get("estimate_as_of", "")).strip(), now)
+    if estimate_time is None:
+        return False
+    return (now - estimate_time).total_seconds() > 120
+
+
+def _apply_official_display(payload: dict[str, object]) -> dict[str, object]:
+    next_payload = dict(payload)
+    official_return = next_payload.get("official_estimated_return", next_payload.get("estimated_return"))
+    official_nav = next_payload.get("official_estimated_nav", next_payload.get("estimated_nav"))
+    if _has_numeric(official_return):
+        official_value = round(float(official_return), 4)
+        next_payload["estimated_return"] = official_value
+        next_payload["estimated_intraday_return"] = official_value
+        next_payload["estimated_return_series"] = [0.0, official_value]
+    if _has_numeric(official_nav):
+        next_payload["estimated_nav"] = round(float(official_nav), 4)
+    return next_payload
+
+
+def _apply_penetration_display(payload: dict[str, object]) -> dict[str, object]:
+    next_payload = dict(payload)
+    penetration_return = next_payload.get("penetration_estimated_return", next_payload.get("estimated_return"))
+    penetration_nav = next_payload.get("penetration_estimated_nav", next_payload.get("estimated_nav"))
+    if _has_numeric(penetration_return):
+        penetration_value = round(float(penetration_return), 4)
+        next_payload["estimated_return"] = penetration_value
+        next_payload["estimated_intraday_return"] = penetration_value
+        next_payload["estimated_return_series"] = [0.0, penetration_value]
+    if _has_numeric(penetration_nav):
+        next_payload["estimated_nav"] = round(float(penetration_nav), 4)
+    return next_payload
+
+
+def _attach_estimate_mode_meta(
+    payload: dict[str, object],
+    *,
+    estimate_mode: str,
+    display_mode: str,
+    is_real_data: bool,
+) -> dict[str, object]:
+    next_payload = dict(payload)
+    next_payload["estimate_mode"] = estimate_mode
+    next_payload["estimate_mode_label"] = _ESTIMATE_MODE_LABELS.get(estimate_mode, str(estimate_mode))
+    if not is_real_data:
+        next_payload["display_estimate_source_label"] = "主题代理估算"
+        return next_payload
+
+    if estimate_mode == "auto":
+        next_payload["display_estimate_source_label"] = "自动(官方)" if display_mode == "official" else "自动(穿透)"
+    elif estimate_mode == "official":
+        next_payload["display_estimate_source_label"] = _DISPLAY_SOURCE_LABELS["official"]
+    elif estimate_mode == "penetration":
+        next_payload["display_estimate_source_label"] = (
+            _DISPLAY_SOURCE_LABELS["penetration"] if display_mode == "penetration" else _DISPLAY_SOURCE_LABELS["official"]
+        )
+    else:
+        next_payload["display_estimate_source_label"] = str(next_payload.get("estimate_source_label", "未知来源"))
+    return next_payload
 
 _THEME_PROXY_LIBRARY: dict[str, dict[str, object]] = {
     "科技成长": {
@@ -242,11 +375,31 @@ def _build_official_estimate_only_payload(fund: FundProfile) -> dict[str, object
     }
 
 
-def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
+def estimate_fund_intraday(fund: FundProfile, estimate_mode: str = "auto") -> dict[str, object]:
+    normalized_mode = _normalize_estimate_mode(estimate_mode)
     if is_real_fund_code(fund.fund_id):
         try:
             payload = _attach_fund_name_display(estimate_real_fund_intraday(fund), fund)
-            return _decorate_estimate_meta(
+            now = _now_shanghai()
+            has_official = _has_numeric(payload.get("official_estimated_return")) and _has_numeric(
+                payload.get("official_estimated_nav")
+            )
+            has_penetration = _has_numeric(payload.get("penetration_estimated_return")) and _has_numeric(
+                payload.get("penetration_estimated_nav")
+            )
+            display_mode = "official"
+            if normalized_mode == "penetration":
+                display_mode = "penetration" if has_penetration else "official"
+            elif normalized_mode == "auto" and _is_china_trading_hours(now):
+                if not has_official or _official_estimate_stale(payload, now):
+                    display_mode = "penetration" if has_penetration else "official"
+
+            if display_mode == "penetration":
+                payload = _apply_penetration_display(payload)
+            else:
+                payload = _apply_official_display(payload)
+
+            payload = _decorate_estimate_meta(
                 payload,
                 source="official_estimate_penetration",
                 source_label="官方估值+持仓穿透",
@@ -254,9 +407,16 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
                 is_real_data=True,
                 disclosure_date=str(payload.get("holdings_disclosure_date", "")),
             )
+            return _attach_estimate_mode_meta(
+                payload,
+                estimate_mode=normalized_mode,
+                display_mode=display_mode,
+                is_real_data=True,
+            )
         except Exception:
             payload = _attach_fund_name_display(_build_official_estimate_only_payload(fund), fund)
-            return _decorate_estimate_meta(
+            payload = _apply_official_display(payload)
+            payload = _decorate_estimate_meta(
                 payload,
                 source="official_estimate_only",
                 source_label="官方实时估值(天天基金)",
@@ -264,12 +424,24 @@ def estimate_fund_intraday(fund: FundProfile) -> dict[str, object]:
                 is_real_data=True,
                 disclosure_date=str(payload.get("holdings_disclosure_date", "")),
             )
+            return _attach_estimate_mode_meta(
+                payload,
+                estimate_mode=normalized_mode,
+                display_mode="official",
+                is_real_data=True,
+            )
 
     payload = _attach_fund_name_display(_sample_estimate_fund_intraday(fund), fund)
-    return _decorate_estimate_meta(
+    payload = _decorate_estimate_meta(
         payload,
         source="theme_proxy_simulation",
         source_label="主题代理估算",
         as_of=datetime.now().strftime("%H:%M"),
+        is_real_data=False,
+    )
+    return _attach_estimate_mode_meta(
+        payload,
+        estimate_mode="theme_proxy",
+        display_mode="theme_proxy",
         is_real_data=False,
     )

@@ -82,6 +82,14 @@ def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
     return limit
 
 
+def parse_estimate_mode(query: dict[str, list[str]]) -> str:
+    raw_mode = query.get("estimate_mode", ["auto"])[0]
+    mode = str(raw_mode or "auto").strip().lower()
+    if mode not in {"auto", "official", "penetration"}:
+        raise ValueError("estimate_mode 仅支持 auto、official、penetration")
+    return mode
+
+
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
     try:
         payload = fetch_fund_catalog(page=page, page_size=page_size, risk_level=risk_level)
@@ -125,11 +133,23 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/v1/portfolio":
-            json_response(self, build_portfolio_snapshot())
+            query = parse_qs(parsed.query)
+            try:
+                estimate_mode = parse_estimate_mode(query)
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            json_response(self, build_portfolio_snapshot(estimate_mode=estimate_mode))
             return
 
         if parsed.path == "/api/v1/portfolio/intraday":
-            json_response(self, build_portfolio_intraday())
+            query = parse_qs(parsed.query)
+            try:
+                estimate_mode = parse_estimate_mode(query)
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            json_response(self, build_portfolio_intraday(estimate_mode=estimate_mode))
             return
 
         if parsed.path == "/api/v1/funds/search":
@@ -180,7 +200,13 @@ class FundInsightHandler(BaseHTTPRequestHandler):
                 if not fund:
                     json_response(self, {"message": "基金不存在"}, HTTPStatus.NOT_FOUND)
                     return
-                json_response(self, estimate_fund_intraday(fund))
+                query = parse_qs(parsed.query)
+                try:
+                    estimate_mode = parse_estimate_mode(query)
+                except ValueError as exc:
+                    json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                json_response(self, estimate_fund_intraday(fund, estimate_mode=estimate_mode))
                 return
 
             fund = find_fund(relative_path, FUNDS)

@@ -37,9 +37,11 @@ import {
   EMPTY_ROW,
   restoreAiConfigs,
   restoreAssistantQuestion,
+  restoreEstimateMode,
   restoreManualRows,
   saveAiConfigs,
   saveAssistantQuestion,
+  saveEstimateMode,
   saveManualRows,
 } from "./lib/storage";
 import type {
@@ -74,9 +76,17 @@ type ConfigFormState = {
   apiKey: string;
 };
 
+type EstimateMode = "auto" | "official" | "penetration";
+
 function createManualEntry(): ManualEntry {
   return { query: "", fundName: "", amount: "", profit: "" };
 }
+
+const ESTIMATE_MODE_LABELS: Record<EstimateMode, string> = {
+  auto: "自动",
+  official: "官方",
+  penetration: "穿透",
+};
 
 function emptySnapshot(): PortfolioSnapshot {
   return {
@@ -286,6 +296,7 @@ export default function App() {
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [activeFundId, setActiveFundId] = useState("");
   const [aiConfigs, setAiConfigs] = useState<AiConfig[]>(initialConfigs);
+  const [estimateMode, setEstimateMode] = useState<EstimateMode>(restoreEstimateMode());
   const [configForm, setConfigForm] = useState<ConfigFormState>(() =>
     formFromConfig(initialConfigs.find((item) => item.active) || initialConfigs[0] || null),
   );
@@ -299,9 +310,11 @@ export default function App() {
   const summary = snapshot?.summary;
   const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
   const latestEstimateTime = extractTimeHHMM(dataQuality?.latest_estimate_as_of);
+  const estimateModeLabel = ESTIMATE_MODE_LABELS[estimateMode];
   const updateStatusText = isChinaTradingHours()
     ? `更新时间：${latestEstimateTime ?? "当前"}`
-    : `已收盘/非交易时段，最后更新 ${latestEstimateTime ?? "15:00"}。`;
+    : `已收盘/非交易时段，最后更新 ${latestEstimateTime ?? "15:00"}`;
+  const updateStatusWithMode = `${updateStatusText}｜估值源：${estimateModeLabel}`;
   const activeConfig = useMemo(() => aiConfigs.find((item) => item.active) || aiConfigs[0] || null, [aiConfigs]);
   const topContribution = intraday?.contributions?.[0];
 
@@ -316,6 +329,10 @@ export default function App() {
   useEffect(() => {
     saveAssistantQuestion(question);
   }, [question]);
+
+  useEffect(() => {
+    saveEstimateMode(estimateMode);
+  }, [estimateMode]);
 
   useEffect(() => {
     setConfigForm(formFromConfig(activeConfig));
@@ -373,11 +390,14 @@ export default function App() {
     setModalNotice("正在反推份额与成本净值...");
     const text = await buildImportTextFromRows(validRows);
     const portfolioPayload = await requestHoldingsImport(text);
-    const intradayPayload = await requestPortfolioIntraday().catch(() => null);
-    const hydrated = hydrateRows(validRows, portfolioPayload);
+    const [latestSnapshot, intradayPayload] = await Promise.all([
+      requestPortfolio(estimateMode).catch(() => portfolioPayload),
+      requestPortfolioIntraday(estimateMode).catch(() => null),
+    ]);
+    const hydrated = hydrateRows(validRows, latestSnapshot);
 
     setManualRows(hydrated);
-    setSnapshot(portfolioPayload);
+    setSnapshot(latestSnapshot);
     setIntraday(intradayPayload);
     setImportOpen(false);
     setManualEntry(createManualEntry());
@@ -391,13 +411,14 @@ export default function App() {
     if (showNotice) setPageNotice(successMessage);
   }
 
-  async function refreshPortfolioData() {
+  async function refreshPortfolioData(nextMode?: EstimateMode) {
     setRefreshing(true);
     setPageNotice("正在刷新盘中估算...");
+    const activeMode = nextMode ?? estimateMode;
     try {
       const [portfolioPayload, intradayPayload] = await Promise.all([
-        requestPortfolio(),
-        requestPortfolioIntraday().catch(() => null),
+        requestPortfolio(activeMode),
+        requestPortfolioIntraday(activeMode).catch(() => null),
       ]);
       setSnapshot(portfolioPayload);
       setIntraday(intradayPayload);
@@ -629,6 +650,22 @@ export default function App() {
               <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100 inline-flex items-center">
                 <Sparkles className="h-3 w-3 mr-1 text-yellow-500" /> 场内穿透实时引擎：运行中
               </span>
+              <div className="ml-3 flex items-center gap-2 text-xs text-gray-500">
+                <span className="hidden sm:inline">估值源</span>
+                <select
+                  value={estimateMode}
+                  onChange={(event) => {
+                    const nextMode = event.target.value as EstimateMode;
+                    setEstimateMode(nextMode);
+                    void refreshPortfolioData(nextMode);
+                  }}
+                  className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="auto">自动</option>
+                  <option value="official">官方</option>
+                  <option value="penetration">穿透</option>
+                </select>
+              </div>
               <div className="h-8 w-8 rounded-full ml-4 border border-gray-200 bg-blue-600 text-white flex items-center justify-center text-xs font-bold">AI</div>
             </div>
           </div>
@@ -661,7 +698,7 @@ export default function App() {
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
                   <div className="flex flex-col">
                     <h2 className="text-lg font-bold text-gray-800">持仓明细</h2>
-                    <p className="text-xs text-slate-500 mt-1">{updateStatusText}</p>
+                    <p className="text-xs text-slate-500 mt-1">{updateStatusWithMode}</p>
                   </div>
                   <div className="space-x-3">
                     <button type="button" onClick={openImportModal} className="bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-100 transition-all font-medium inline-flex items-center">

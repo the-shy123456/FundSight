@@ -5,6 +5,7 @@ export const STORAGE_KEYS = {
   assistantQuestion: "fund-workbench-assistant-question",
   assistantSession: "fund-workbench-assistant-session",
   aiConfigs: "fund-workbench-ai-configs",
+  estimateMode: "estimate_mode",
 } as const;
 
 export const DEFAULT_ROWS: ManualRow[] = [
@@ -101,4 +102,16 @@ export function restoreAiConfigs(): AiConfig[] {
 
 export function saveAiConfigs(configs: AiConfig[]): void {
   localStorage.setItem(STORAGE_KEYS.aiConfigs, JSON.stringify(configs));
+}
+
+export function restoreEstimateMode(): "auto" | "official" | "penetration" {
+  const raw = localStorage.getItem(STORAGE_KEYS.estimateMode);
+  if (raw === "official" || raw === "penetration" || raw === "auto") {
+    return raw;
+  }
+  return "auto";
+}
+
+export function saveEstimateMode(value: "auto" | "official" | "penetration"): void {
+  localStorage.setItem(STORAGE_KEYS.estimateMode, value);
 }

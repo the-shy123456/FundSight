@@ -116,12 +116,14 @@ export async function requestHoldingsImport(text: string): Promise<PortfolioSnap
   });
 }
 
-export async function requestPortfolio(): Promise<PortfolioSnapshot> {
-  return fetchJson<PortfolioSnapshot>("/api/v1/portfolio");
+export async function requestPortfolio(estimateMode?: "auto" | "official" | "penetration"): Promise<PortfolioSnapshot> {
+  const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
+  return fetchJson<PortfolioSnapshot>(`/api/v1/portfolio${query}`);
 }
 
-export async function requestPortfolioIntraday(): Promise<PortfolioIntraday> {
-  return fetchJson<PortfolioIntraday>("/api/v1/portfolio/intraday");
+export async function requestPortfolioIntraday(estimateMode?: "auto" | "official" | "penetration"): Promise<PortfolioIntraday> {
+  const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
+  return fetchJson<PortfolioIntraday>(`/api/v1/portfolio/intraday${query}`);
 }
 
 export async function requestAssistant(payload: { fundId: string; question: string }): Promise<AssistantResponse> {

@@ -38,14 +38,19 @@ def _resolve_inputs(primary: object | None, secondary: object | None) -> tuple[t
     return FUNDS, parse_holdings_payload(primary, FUNDS)
 
 
-def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict[str, object]:
+def _build_position(
+    holding: HoldingLot,
+    funds: tuple[FundProfile, ...],
+    *,
+    estimate_mode: str = "auto",
+) -> dict[str, object]:
     fund = resolve_fund(holding.fund_id, funds)
     if fund is None:
         raise ValueError(f"基金不存在：{holding.fund_id}")
 
     name_display = normalize_name_display(fund.name)
     diagnosis = build_diagnosis(fund)
-    estimate = estimate_fund_intraday(fund)
+    estimate = estimate_fund_intraday(fund, estimate_mode=estimate_mode)
     latest_nav = round(float(fund.nav_history[-1]), 4)
     previous_value = holding.shares * latest_nav
     cost_basis = holding.shares * holding.unit_cost
@@ -112,14 +117,24 @@ def _build_position(holding: HoldingLot, funds: tuple[FundProfile, ...]) -> dict
     }
 
 
-def _positions(holdings: tuple[HoldingLot, ...], funds: tuple[FundProfile, ...]) -> list[dict[str, object]]:
-    positions = [_build_position(holding, funds) for holding in holdings]
+def _positions(
+    holdings: tuple[HoldingLot, ...],
+    funds: tuple[FundProfile, ...],
+    *,
+    estimate_mode: str = "auto",
+) -> list[dict[str, object]]:
+    positions = [_build_position(holding, funds, estimate_mode=estimate_mode) for holding in holdings]
     return sorted(positions, key=lambda item: float(item["current_value"]), reverse=True)
 
 
-def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = None) -> dict[str, object]:
+def build_portfolio_snapshot(
+    primary: object = FUNDS,
+    holdings: object | None = None,
+    *,
+    estimate_mode: str = "auto",
+) -> dict[str, object]:
     funds, active_holdings = _resolve_inputs(primary, holdings)
-    positions = _positions(active_holdings, funds)
+    positions = _positions(active_holdings, funds, estimate_mode=estimate_mode)
     if not positions:
         empty_quality = {
             "holding_count": 0,
@@ -128,6 +143,7 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
             "latest_estimate_as_of": "",
         }
         return {
+            "estimate_mode": estimate_mode,
             "mode_label": "场内穿透估算",
             "as_of": __import__("datetime").datetime.now().strftime("%H:%M"),
             "summary": {
@@ -224,6 +240,7 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
         disclaimer = "组合收益为样例级盘中代理估算，仅适合做方向参考。"
 
     return {
+        "estimate_mode": estimate_mode,
         "mode_label": "场内穿透估算",
         "as_of": __import__("datetime").datetime.now().strftime("%H:%M"),
         "summary": summary,
@@ -237,7 +254,12 @@ def build_portfolio_snapshot(primary: object = FUNDS, holdings: object | None = 
     }
 
 
-def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = None) -> dict[str, object]:
+def build_portfolio_intraday(
+    primary: object = FUNDS,
+    holdings: object | None = None,
+    *,
+    estimate_mode: str = "auto",
+) -> dict[str, object]:
     funds, active_holdings = _resolve_inputs(primary, holdings)
     labels: list[str] = []
     pnl_series: list[float] = []
@@ -251,7 +273,7 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
         if fund is None:
             continue
 
-        estimate = estimate_fund_intraday(fund)
+        estimate = estimate_fund_intraday(fund, estimate_mode=estimate_mode)
         previous_value = holding.shares * float(fund.nav_history[-1])
         previous_total += previous_value
         base_values[fund.fund_id] = previous_value
@@ -300,6 +322,7 @@ def build_portfolio_intraday(primary: object = FUNDS, holdings: object | None = 
         disclaimer = "组合盘中曲线混合了真实基金估值参考与原型代理估算，请重点关注来源标签。"
 
     return {
+        "estimate_mode": estimate_mode,
         "chart": chart,
         "labels": labels,
         "series": chart["series"],
