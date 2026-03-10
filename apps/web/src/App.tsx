@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   BrainCircuit,
@@ -240,6 +240,16 @@ function buildAnalysisQuestion(position: PortfolioPosition): string {
   return `分析一下${position.name}今天的走势？`;
 }
 
+function buildRelatedFundLabel(item: FundCatalogItem): string {
+  const name = (item.name ?? "").trim();
+  const suffix = name.slice(-1);
+  if (suffix === "A" || suffix === "C") {
+    return `联接${suffix} ${item.fund_id}`;
+  }
+  const shortName = name.length > 10 ? `${name.slice(0, 10)}...` : name;
+  return shortName ? `${item.fund_id} ${shortName}` : item.fund_id;
+}
+
 export default function App() {
   const initialRows = restoreManualRows();
   const initialConfigs = restoreAiConfigs();
@@ -252,6 +262,8 @@ export default function App() {
   const [importTab, setImportTab] = useState<ImportTab>("manual");
   const [manualEntry, setManualEntry] = useState<ManualEntry>(createManualEntry());
   const [manualSuggestions, setManualSuggestions] = useState<FundCatalogItem[]>([]);
+  const [relatedFunds, setRelatedFunds] = useState<FundCatalogItem[]>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
   const [modalNotice, setModalNotice] = useState("");
   const [pickerStatus, setPickerStatus] = useState("");
   const [ocrRows, setOcrRows] = useState<ManualRow[]>([]);
@@ -276,6 +288,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pageNotice, setPageNotice] = useState("");
+  const relatedRequestIdRef = useRef(0);
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
@@ -364,6 +377,8 @@ export default function App() {
     setImportOpen(false);
     setManualEntry(createManualEntry());
     setManualSuggestions([]);
+    setRelatedFunds([]);
+    setRelatedLoading(false);
     setOcrRows([]);
     setOcrWarnings([]);
     setPickerStatus("");
@@ -416,10 +431,38 @@ export default function App() {
     }
 
     try {
-      const items = await requestFundSearch(cleanQuery);
+      const items = await requestFundSearch(cleanQuery, 10);
       setManualSuggestions(items);
     } catch {
       setManualSuggestions([]);
+    }
+  }
+
+  async function loadRelatedFunds(selected: FundCatalogItem) {
+    const requestId = relatedRequestIdRef.current + 1;
+    relatedRequestIdRef.current = requestId;
+    const name = (selected.name ?? "").trim();
+
+    if (!name.includes("ETF")) {
+      setRelatedFunds([]);
+      setRelatedLoading(false);
+      return;
+    }
+
+    setRelatedLoading(true);
+    setRelatedFunds([]);
+    try {
+      const items = await requestFundSearch(name, 20);
+      if (relatedRequestIdRef.current !== requestId) return;
+      const filtered = items.filter((item) => item.fund_id !== selected.fund_id && item.name?.includes("联接"));
+      setRelatedFunds(filtered);
+    } catch {
+      if (relatedRequestIdRef.current !== requestId) return;
+      setRelatedFunds([]);
+    } finally {
+      if (relatedRequestIdRef.current === requestId) {
+        setRelatedLoading(false);
+      }
     }
   }
 
@@ -428,6 +471,8 @@ export default function App() {
     setImportTab("manual");
     setManualEntry(createManualEntry());
     setManualSuggestions([]);
+    setRelatedFunds([]);
+    setRelatedLoading(false);
     setModalNotice("");
     setPickerStatus("");
     setOcrRows([]);
@@ -440,11 +485,13 @@ export default function App() {
     setManualEntry({ query: item.fund_id, fundName: item.name, amount: "", profit: "" });
     setManualSuggestions([]);
     setModalNotice(`已选中 ${item.name}，请补充持有金额和累计收益。`);
+    void loadRelatedFunds(item);
   }
 
   function pickSuggestion(item: FundCatalogItem) {
     setManualEntry((current) => ({ ...current, query: item.fund_id, fundName: item.name }));
     setManualSuggestions([]);
+    void loadRelatedFunds(item);
   }
 
   async function submitManualImport() {
@@ -851,6 +898,9 @@ export default function App() {
                         onChange={(event) => {
                           const value = event.target.value;
                           setManualEntry((current) => ({ ...current, query: value, fundName: normalizeFundCode(value) === normalizeFundCode(current.query) ? current.fundName : "" }));
+                          relatedRequestIdRef.current += 1;
+                          setRelatedFunds([]);
+                          setRelatedLoading(false);
                           void searchManualSuggestions(value);
                         }}
                         className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none"
@@ -862,6 +912,24 @@ export default function App() {
                         {manualSuggestions.map((item) => (
                           <button key={item.fund_id} type="button" className="w-full px-4 py-3 hover:bg-blue-50 text-sm flex justify-between text-left" onClick={() => pickSuggestion(item)}>
                             <span className="font-medium">{item.name}</span><span className="text-xs text-gray-500">{item.fund_id}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {relatedFunds.length ? (
+                      <div className="mt-2 text-xs text-gray-500 flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-gray-500">同系列联接：</span>
+                        {relatedFunds.map((item) => (
+                          <button
+                            key={item.fund_id}
+                            type="button"
+                            className="px-2.5 py-1 rounded-full border border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200"
+                            onClick={() => {
+                              pickSuggestion(item);
+                              setModalNotice(`已切换为 ${item.name}。`);
+                            }}
+                          >
+                            {buildRelatedFundLabel(item)}
                           </button>
                         ))}
                       </div>

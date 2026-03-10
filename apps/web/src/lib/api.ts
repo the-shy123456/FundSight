@@ -54,11 +54,11 @@ export async function requestFundsCatalog({
   return fetchJson<FundCatalogResponse>(`/api/v1/funds?page=${page}&page_size=${pageSize}`);
 }
 
-export async function requestFundSearch(keyword: string): Promise<FundCatalogItem[]> {
+export async function requestFundSearch(keyword: string, limit = 10): Promise<FundCatalogItem[]> {
   const cleanQuery = keyword.trim();
   if (!cleanQuery) return [];
   const payload = await fetchJson<{ items?: FundCatalogItem[] }>(
-    `/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}&limit=10`,
+    `/api/v1/funds/search?q=${encodeURIComponent(cleanQuery)}&limit=${limit}`,
   );
   return payload.items ?? [];
 }
