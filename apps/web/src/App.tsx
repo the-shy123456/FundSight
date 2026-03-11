@@ -496,6 +496,11 @@ export default function App() {
   const [detailPredictionsSettling, setDetailPredictionsSettling] = useState(false);
   const [detailPredictionsNotice, setDetailPredictionsNotice] = useState("");
   const [detailNotice, setDetailNotice] = useState("");
+  const [themeOpen, setThemeOpen] = useState(false);
+  const [themeName, setThemeName] = useState("");
+  const [themeFunds, setThemeFunds] = useState<FundCatalogItem[]>([]);
+  const [themeLoading, setThemeLoading] = useState(false);
+  const [themeNotice, setThemeNotice] = useState("");
   const [aiConfigs, setAiConfigs] = useState<AiConfig[]>(initialConfigs);
   const [estimateMode, setEstimateMode] = useState<EstimateMode>(restoreEstimateMode());
   const [configForm, setConfigForm] = useState<ConfigFormState>(() =>
@@ -510,6 +515,7 @@ export default function App() {
   const holdingsRequestIdRef = useRef(0);
   const predictionsRequestIdRef = useRef(0);
   const intervalReturnsRequestIdRef = useRef(0);
+  const themeRequestIdRef = useRef(0);
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
@@ -765,6 +771,27 @@ export default function App() {
     }
   }
 
+  async function loadThemeFunds(theme: string) {
+    const requestId = themeRequestIdRef.current + 1;
+    themeRequestIdRef.current = requestId;
+    setThemeLoading(true);
+    setThemeNotice("");
+    setThemeFunds([]);
+    try {
+      const items = await requestFundSearch(theme, 20);
+      if (themeRequestIdRef.current !== requestId) return;
+      setThemeFunds(items);
+    } catch (error) {
+      if (themeRequestIdRef.current !== requestId) return;
+      setThemeFunds([]);
+      setThemeNotice(error instanceof Error ? error.message : "板块基金加载失败。");
+    } finally {
+      if (themeRequestIdRef.current === requestId) {
+        setThemeLoading(false);
+      }
+    }
+  }
+
   async function loadNavTrend(fundId: string, range: NavRange) {
     if (!fundId) return;
     const requestId = navTrendRequestIdRef.current + 1;
@@ -911,6 +938,22 @@ export default function App() {
   function closeFundDetail() {
     setDetailOpen(false);
     setDetailNotice("");
+  }
+
+  function openThemeDrawer(theme: string) {
+    const cleanTheme = theme.trim();
+    if (!cleanTheme) return;
+    setThemeOpen(true);
+    setThemeName(cleanTheme);
+    setThemeNotice("");
+    setThemeFunds([]);
+    void loadThemeFunds(cleanTheme);
+    setDetailOpen(false);
+  }
+
+  function closeThemeDrawer() {
+    setThemeOpen(false);
+    setThemeNotice("");
   }
 
   function openImportModal() {
@@ -1522,10 +1565,7 @@ export default function App() {
                     onClick={() => {
                       const theme = detailFund?.theme?.trim();
                       if (!theme) return;
-                      setActiveTab("library");
-                      setCatalogQuery(theme);
-                      void loadCatalog({ query: theme, page: 1, pageSize: catalogPageSize });
-                      setDetailOpen(false);
+                      openThemeDrawer(theme);
                     }}
                   >
                     查看同板块基金
@@ -1590,6 +1630,63 @@ export default function App() {
                   </table>
                 </div>
               </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {themeOpen ? (
+        <div className="fixed inset-0 z-40 flex">
+          <button type="button" className="flex-1 bg-gray-900/40" onClick={closeThemeDrawer} aria-label="关闭主题遮罩" />
+          <div className="w-full max-w-lg bg-white h-full shadow-2xl flex flex-col border-l border-gray-200">
+            <div className="px-5 py-4 border-b border-gray-100 bg-gray-50">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">板块/主题页</p>
+                  <h3 className="text-lg font-bold text-gray-900">{themeName || "--"}</h3>
+                  <p className="text-xs text-gray-500 mt-1">相关基金：最多展示 20 只</p>
+                </div>
+                <button type="button" onClick={closeThemeDrawer} className="text-gray-400 hover:text-gray-700">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              {themeNotice ? <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{themeNotice}</div> : null}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5">
+              {themeLoading ? (
+                <div className="text-xs text-gray-500 flex items-center"><LoaderCircle className="h-4 w-4 mr-2 animate-spin text-blue-500" />板块基金加载中...</div>
+              ) : themeFunds.length ? (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-200 text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600">基金</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600">风险</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-600">净值</th>
+                        <th className="px-3 py-2 text-center font-semibold text-gray-600">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {themeFunds.map((item) => (
+                        <tr key={item.fund_id}>
+                          <td className="px-3 py-2">
+                            <div className="text-sm font-medium text-gray-800">{resolveFundName(item.name, item.name_display) || item.name}</div>
+                            <div className="text-[11px] text-gray-500 mt-0.5">{item.fund_id}</div>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-600">{item.risk_level || "--"}</td>
+                          <td className="px-3 py-2 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
+                          <td className="px-3 py-2 text-center">
+                            <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded text-xs font-medium">加入持仓</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500">暂无可展示的板块基金。</div>
+              )}
             </div>
           </div>
         </div>
