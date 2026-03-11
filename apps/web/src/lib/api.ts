@@ -126,13 +126,18 @@ export async function requestPortfolioIntraday(estimateMode?: "auto" | "official
   return fetchJson<PortfolioIntraday>(`/api/v1/portfolio/intraday${query}`);
 }
 
-export async function requestAssistant(payload: { fundId: string; question: string }): Promise<AssistantResponse> {
+export async function requestAssistant(payload: {
+  fundId?: string;
+  question: string;
+  estimateMode?: "auto" | "official" | "penetration";
+}): Promise<AssistantResponse> {
   return fetchJson<AssistantResponse>("/api/v1/assistant/ask", {
     method: "POST",
     body: JSON.stringify({
-      fund_id: payload.fundId,
+      fund_id: payload.fundId ?? "",
       cash_available: 0,
       question: payload.question,
+      estimate_mode: payload.estimateMode,
     }),
   });
 }

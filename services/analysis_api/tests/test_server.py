@@ -393,6 +393,22 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIsNotNone(payload["holding_context"])
         self.assertEqual(payload["holding_context"]["shares"], 880)
 
+    def test_assistant_endpoint_returns_portfolio_answer_for_holdings_question(self) -> None:
+        payload = self._post_json(
+            "/api/v1/assistant/ask",
+            {
+                "question": "我持仓的这几只基金接下来几天有什么动向？我是否需要操作",
+                "fund_id": "F003",
+                "holdings": [
+                    {"fund_id": "F002", "shares": 800, "cost_nav": 1.05},
+                    {"fund_id": "F003", "shares": 900, "cost_nav": 1.10},
+                ],
+            },
+        )
+        self.assertIn("per_fund", payload)
+        self.assertGreaterEqual(len(payload["per_fund"]), 2)
+        self.assertEqual(payload["portfolio"]["holding_count"], 2)
+
     def test_funds_endpoint_with_risk_level_returns_page_contract(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds?risk_level=high&page=1&page_size=20")
         payload = json.loads(response.read().decode("utf-8"))

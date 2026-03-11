@@ -3,7 +3,8 @@ from __future__ import annotations
 from .analytics import build_diagnosis, fund_metrics
 from .holdings import HoldingLot, get_holdings
 from .intraday_estimator import estimate_fund_intraday
-from .portfolio import find_fund, find_position
+from .name_display import normalize_name_display
+from .portfolio import find_fund
 from .real_data import fetch_fund_announcements, is_real_fund_code
 from .research import NEGATIVE_KEYWORDS, POSITIVE_KEYWORDS
 from .sample_data import FUNDS
@@ -12,6 +13,30 @@ from .sample_data import FUNDS
 def _default_question(question: str) -> str:
     clean_question = question.strip()
     return clean_question or "这只基金现在更适合继续拿、减仓还是分批处理？"
+
+
+PORTFOLIO_QUESTION_KEYWORDS = (
+    "组合",
+    "持仓",
+    "这几只",
+    "几只基金",
+    "几只",
+    "全部",
+    "全仓",
+    "所有基金",
+    "全部基金",
+    "我持仓",
+    "我的基金",
+    "仓位",
+)
+
+
+def _is_portfolio_question(question: str) -> bool:
+    clean = question.strip()
+    if not clean:
+        return False
+    lowered = clean.lower()
+    return any(keyword.lower() in lowered for keyword in PORTFOLIO_QUESTION_KEYWORDS)
 
 
 def _pick_fund_id(
@@ -113,13 +138,201 @@ def _build_direction_forecast(
     }
 
 
+def _estimate_current_value(
+    *,
+    shares: float,
+    unit_cost: float,
+    fund: object,
+    estimate: dict[str, object],
+) -> tuple[float, float, float, float]:
+    try:
+        estimated_nav = float(estimate.get("estimated_nav", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        estimated_nav = 0.0
+    latest_nav = 0.0
+    if estimated_nav <= 0:
+        try:
+            latest_nav = float(getattr(fund, "nav_history", [0.0])[-1])
+        except (TypeError, ValueError, IndexError):
+            latest_nav = 0.0
+        estimated_nav = latest_nav
+    if latest_nav <= 0:
+        try:
+            latest_nav = float(getattr(fund, "nav_history", [0.0])[-1])
+        except (TypeError, ValueError, IndexError):
+            latest_nav = estimated_nav
+    current_value = shares * estimated_nav
+    previous_value = shares * latest_nav
+    cost_basis = shares * unit_cost
+    total_pnl = current_value - cost_basis
+    today_estimated_pnl = current_value - previous_value
+    return current_value, total_pnl, today_estimated_pnl, cost_basis
+
+
+def _portfolio_suggestion(direction: str, probability_up: float, total_pnl: float) -> str:
+    direction_probability = probability_up if direction == "up" else 1 - probability_up
+    confidence = "偏高" if direction_probability >= 0.6 else "一般"
+    if direction == "up" and total_pnl >= 0:
+        return f"短期偏多、置信度{confidence}，可以继续持有但注意分批止盈。"
+    if direction == "up" and total_pnl < 0:
+        return f"短期有修复迹象、置信度{confidence}，可观察反弹力度再决定是否补仓。"
+    if direction == "down" and total_pnl >= 0:
+        return f"回撤风险偏高、置信度{confidence}，建议分批锁定浮盈或提高止损位。"
+    return f"方向偏弱、置信度{confidence}，更适合控制仓位等待企稳。"
+
+
+def _build_portfolio_answer(
+    *,
+    question: str,
+    holdings: tuple[HoldingLot, ...],
+    cash_available: float,
+    estimate_mode: str,
+) -> dict[str, object]:
+    candidates: list[dict[str, object]] = []
+
+    for holding in holdings:
+        fund = find_fund(holding.fund_id, FUNDS)
+        if fund is None:
+            continue
+        estimate = estimate_fund_intraday(fund, estimate_mode=estimate_mode)
+        metrics = fund_metrics(fund)
+        current_value, total_pnl, today_estimated_pnl, _ = _estimate_current_value(
+            shares=holding.shares,
+            unit_cost=holding.unit_cost,
+            fund=fund,
+            estimate=estimate,
+        )
+
+        announcement_items: list[dict[str, object]] = []
+        if is_real_fund_code(fund.fund_id):
+            try:
+                announcements_payload = fetch_fund_announcements(fund.fund_id, page=1, per=3)
+                announcement_items = list(announcements_payload.get("items") or [])[:3]
+            except Exception:
+                announcement_items = []
+
+        evidence = [
+            {
+                "label": str(estimate.get("estimate_source_label", "收益参考")),
+                "value": f"{float(estimate.get('estimated_return', 0.0)) * 100:.2f}%",
+                "detail": f"估值时间 {str(estimate.get('estimate_as_of', '')) or '当前'}。{str(estimate.get('confidence', {}).get('reason', '') or '')}",
+            },
+            {
+                "label": "近 3 期动量",
+                "value": f"{float(metrics.get('momentum', 0.0)) * 100:.2f}%",
+                "detail": "用于判断短期方向是否延续。",
+            },
+            {
+                "label": "最大回撤",
+                "value": f"{float(metrics.get('max_drawdown', 0.0)) * 100:.2f}%",
+                "detail": "回撤越大，越不适合短线频繁操作。",
+            },
+        ]
+        disclosure_date = str(estimate.get("holdings_disclosure_date", ""))
+        if disclosure_date:
+            evidence.append(
+                {
+                    "label": "持仓披露日期",
+                    "value": disclosure_date,
+                    "detail": "披露越新，穿透估算通常越有参考价值。",
+                }
+            )
+
+        forecast = _build_direction_forecast(
+            metrics,
+            announcement_items,
+            ["最新公告（东财 fundf10）", "近 3 期动量", "最大回撤"],
+        )
+        suggestion = _portfolio_suggestion(
+            str(forecast.get("direction", "up")),
+            float(forecast.get("probability_up", 0.5)),
+            float(total_pnl),
+        )
+
+        candidates.append(
+            {
+                "fund_id": fund.fund_id,
+                "name": fund.name,
+                "name_display": normalize_name_display(fund.name),
+                "holding": {
+                    "current_value": round(current_value, 2),
+                    "total_pnl": round(total_pnl, 2),
+                    "today_estimated_pnl": round(today_estimated_pnl, 2),
+                },
+                "forecast": forecast,
+                "suggestion": suggestion,
+                "evidence": evidence,
+                "announcement_evidence": _build_announcement_evidence(announcement_items),
+            }
+        )
+
+    candidates.sort(key=lambda item: float(item.get("holding", {}).get("current_value", 0.0)), reverse=True)
+    limit = 8
+    per_fund = candidates[:limit]
+
+    up_count = sum(1 for item in per_fund if item.get("forecast", {}).get("direction") == "up")
+    down_count = len(per_fund) - up_count
+    summary_lines = [
+        f"组合层面：{len(per_fund)} 只基金中 {up_count} 只偏向上行、{down_count} 只偏向回撤，未来 5 个交易日更适合分批处理。",
+    ]
+    if len(holdings) > len(per_fund):
+        summary_lines[0] += f"（仅展示市值前 {len(per_fund)} 只）"
+    summary_lines.append("")
+    summary_lines.append("逐只参考：")
+    for item in per_fund:
+        name = item.get("name_display") or item.get("name") or item.get("fund_id")
+        forecast = item.get("forecast", {})
+        direction = forecast.get("direction", "up")
+        direction_label = "上涨" if direction == "up" else "下跌"
+        probability_up = float(forecast.get("probability_up", 0.5))
+        direction_probability = probability_up if direction == "up" else 1 - probability_up
+        suggestion = item.get("suggestion", "")
+        summary_lines.append(f"- {name}：{direction_label}（概率{direction_probability * 100:.0f}%），{suggestion}")
+
+    portfolio_actions = [
+        "优先关注下跌概率更高且已有浮盈的基金，分批锁定收益。",
+        "对上涨概率较高的基金保持观察，避免一次性加仓。",
+        "若整体波动放大，先把仓位降到自己可承受的回撤区间。",
+    ]
+    if cash_available > 0:
+        portfolio_actions.append("如需加仓，建议预设分批承接位，避免追涨。")
+
+    return {
+        "question": question,
+        "summary": "\n".join(summary_lines),
+        "portfolio": {
+            "holding_count": len(holdings),
+            "horizon_trading_days": 5,
+            "estimate_mode": estimate_mode,
+        },
+        "per_fund": per_fund,
+        "portfolio_actions": portfolio_actions,
+        "risks": [
+            "组合预测为盘中估算+动量参考，仍不等于最终净值。",
+            "短线高频操作容易被震荡反复打脸，建议以分批执行为主。",
+        ],
+        "disclaimer": "该回答是样例级决策辅助，不构成收益承诺、投顾建议或真实交易指令。",
+    }
+
+
 def ask_assistant(
     question: str,
     fund_id: str | None = None,
     cash_available: float = 0.0,
     holdings: tuple[HoldingLot, ...] | None = None,
+    estimate_mode: str = "auto",
 ) -> dict[str, object]:
     active_holdings = holdings if holdings is not None else get_holdings()
+    clean_question = _default_question(question)
+
+    if _is_portfolio_question(clean_question) and len(active_holdings) >= 2:
+        return _build_portfolio_answer(
+            question=clean_question,
+            holdings=active_holdings,
+            cash_available=cash_available,
+            estimate_mode=estimate_mode,
+        )
+
     selected_fund_id = _pick_fund_id(fund_id, active_holdings)
     if not selected_fund_id:
         raise ValueError("请先选择基金或导入持仓")
@@ -128,11 +341,9 @@ def ask_assistant(
     if fund is None:
         raise ValueError(f"基金不存在：{selected_fund_id}")
 
-    clean_question = _default_question(question)
-    estimate = estimate_fund_intraday(fund)
+    estimate = estimate_fund_intraday(fund, estimate_mode=estimate_mode)
     metrics = fund_metrics(fund)
     diagnosis = build_diagnosis(fund)
-    position = find_position(fund.fund_id, active_holdings, FUNDS)
     announcement_items: list[dict[str, object]] = []
     if is_real_fund_code(fund.fund_id):
         try:
@@ -151,8 +362,25 @@ def ask_assistant(
     elif float(estimate["estimated_return"]) < -0.002:
         stance = "偏谨慎"
 
+    holding_context = None
+    holding = next((item for item in active_holdings if item.fund_id == fund.fund_id), None)
+    if holding is not None:
+        current_value, total_pnl, today_estimated_pnl, _ = _estimate_current_value(
+            shares=holding.shares,
+            unit_cost=holding.unit_cost,
+            fund=fund,
+            estimate=estimate,
+        )
+        holding_context = {
+            "shares": holding.shares,
+            "avg_cost": holding.unit_cost,
+            "current_value": round(current_value, 2),
+            "total_pnl": round(total_pnl, 2),
+            "today_estimated_pnl": round(today_estimated_pnl, 2),
+        }
+
     summary = f"{fund.name} 当前更适合按计划分批处理，而不是把下周涨跌当成确定答案。"
-    if position and float(position["total_pnl"]) > 0:
+    if holding_context and float(holding_context["total_pnl"]) > 0:
         summary = f"{fund.name} 已有浮盈，更适合分批止盈或抬高止损位，而不是一次性清仓等回调。"
     if wants_to_buy_back and cash_available > 0:
         summary = f"如果你还有 ¥{cash_available:.0f} 机动资金，更建议分两到三笔观察回撤承接，不建议一次性梭哈。"
@@ -160,16 +388,6 @@ def ask_assistant(
         summary = "系统更适合给你情景分析和仓位建议，不能把收益最大化回答成确定性承诺。"
     if stance == "偏谨慎" and wants_to_sell:
         summary = f"{fund.name} 当前盘中估算偏弱，若你主要目标是保护浮盈，分批减仓通常比赌下周反弹更稳。"
-
-    holding_context = None
-    if position is not None:
-        holding_context = {
-            "shares": position["shares"],
-            "avg_cost": position["avg_cost"],
-            "current_value": position["current_value"],
-            "total_pnl": position["total_pnl"],
-            "today_estimated_pnl": position["today_estimated_pnl"],
-        }
 
     source_label = str(estimate.get("estimate_source_label", "收益参考"))
     estimate_as_of = str(estimate.get("estimate_as_of", "")) or "当前"

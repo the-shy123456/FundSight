@@ -88,6 +88,28 @@ const ESTIMATE_MODE_LABELS: Record<EstimateMode, string> = {
   penetration: "穿透",
 };
 
+const PORTFOLIO_QUESTION_KEYWORDS = [
+  "组合",
+  "持仓",
+  "这几只",
+  "几只基金",
+  "几只",
+  "全部",
+  "全仓",
+  "所有基金",
+  "全部基金",
+  "我持仓",
+  "我的基金",
+  "仓位",
+];
+
+function isPortfolioQuestion(text: string): boolean {
+  const clean = text.trim();
+  if (!clean) return false;
+  const lowered = clean.toLowerCase();
+  return PORTFOLIO_QUESTION_KEYWORDS.some((keyword) => lowered.includes(keyword.toLowerCase()));
+}
+
 function emptySnapshot(): PortfolioSnapshot {
   return {
     summary: {
@@ -169,6 +191,32 @@ function greetingText(snapshot: PortfolioSnapshot | null): string {
 }
 
 function assistantText(payload: AssistantResponse): string {
+  if (payload.per_fund?.length) {
+    const summaryLine = (payload.summary || "组合层面：请结合持仓分批处理。")
+      .split("\n")
+      .find((line) => line.trim().length) || "组合层面：请结合持仓分批处理。";
+    const lines = [summaryLine, "", "逐只参考："];
+    payload.per_fund.forEach((item) => {
+      const name = resolveFundName(item.name, item.name_display) || item.fund_id;
+      const forecast = item.forecast;
+      let directionLabel = "方向未知";
+      let probabilityText = "";
+      if (forecast?.direction) {
+        directionLabel = forecast.direction === "up" ? "上涨" : "下跌";
+        if (typeof forecast.probability_up === "number") {
+          const directionProbability = forecast.direction === "up" ? forecast.probability_up : 1 - forecast.probability_up;
+          probabilityText = `（概率${Math.round(directionProbability * 100)}%）`;
+        }
+      }
+      const suggestion = item.suggestion ? `，${item.suggestion}` : "";
+      lines.push(`- ${name}：${directionLabel}${probabilityText}${suggestion}`);
+    });
+    if (payload.risks?.length) {
+      lines.push("", `风险提示：${payload.risks[0]}`);
+    }
+    return lines.join("\n");
+  }
+
   const lines = [payload.summary || "我先给你一个简要判断。"];
 
   if (payload.actions?.length) {
@@ -580,10 +628,15 @@ export default function App() {
 
   async function ask(questionText?: string, fundId?: string) {
     const cleanQuestion = (questionText ?? question).trim();
+    const portfolioQuestion = isPortfolioQuestion(cleanQuestion);
     const targetFundId = fundId ?? activeFundId ?? positions[0]?.fund_id ?? "";
 
-    if (!positions.length || !targetFundId) {
+    if (!positions.length) {
       setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先导入持仓，再开始分析。" }]);
+      return;
+    }
+    if (!portfolioQuestion && !targetFundId) {
+      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先选择基金，再开始分析。" }]);
       return;
     }
 
@@ -593,9 +646,15 @@ export default function App() {
     setAssistantLoading(true);
 
     try {
-      const payload = await requestAssistant({ fundId: targetFundId, question: cleanQuestion });
+      const payload = await requestAssistant({
+        fundId: portfolioQuestion ? "" : targetFundId,
+        question: cleanQuestion,
+        estimateMode,
+      });
       setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: assistantText(payload) }]);
-      setActiveFundId(targetFundId);
+      if (!portfolioQuestion && targetFundId) {
+        setActiveFundId(targetFundId);
+      }
       setQuestion("");
     } catch (error) {
       setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: error instanceof Error ? error.message : "AI 助手暂时不可用，请稍后重试。" }]);

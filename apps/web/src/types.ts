@@ -138,6 +138,37 @@ export interface FundCatalogResponse {
   page_size: number;
 }
 
+export interface Forecast {
+  horizon_trading_days?: number;
+  direction?: "up" | "down";
+  probability_up?: number;
+  rationale?: string[];
+  evidence_refs?: string[];
+}
+
+export interface AssistantHolding {
+  current_value?: number;
+  total_pnl?: number;
+  today_estimated_pnl?: number;
+}
+
+export interface AssistantPerFund {
+  fund_id: string;
+  name?: string;
+  name_display?: string;
+  holding?: AssistantHolding;
+  forecast?: Forecast;
+  suggestion?: string;
+  evidence?: Array<{ label: string; value: string; detail: string }>;
+  announcement_evidence?: { label?: string; value?: string; detail?: string };
+}
+
+export interface AssistantPortfolioMeta {
+  holding_count?: number;
+  horizon_trading_days?: number;
+  estimate_mode?: string;
+}
+
 export interface AssistantResponse {
   fund?: { fund_id?: string; name?: string; theme?: string; risk_label?: string };
   summary?: string;
@@ -145,8 +176,12 @@ export interface AssistantResponse {
   actions?: Array<{ title: string; fit: string; detail: string }>;
   scenarios?: Array<{ name: string; condition: string; impact: string }>;
   risks?: string[];
+  forecast?: Forecast;
   confidence?: { score?: number; label?: string; reason?: string };
   disclaimer?: string;
+  portfolio?: AssistantPortfolioMeta;
+  per_fund?: AssistantPerFund[];
+  portfolio_actions?: string[];
 }
 
 export interface OcrResponse {

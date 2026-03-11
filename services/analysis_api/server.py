@@ -82,12 +82,16 @@ def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
     return limit
 
 
-def parse_estimate_mode(query: dict[str, list[str]]) -> str:
-    raw_mode = query.get("estimate_mode", ["auto"])[0]
-    mode = str(raw_mode or "auto").strip().lower()
+def parse_estimate_mode_value(value: object | None) -> str:
+    mode = str(value or "auto").strip().lower()
     if mode not in {"auto", "official", "penetration"}:
         raise ValueError("estimate_mode 仅支持 auto、official、penetration")
     return mode
+
+
+def parse_estimate_mode(query: dict[str, list[str]]) -> str:
+    raw_mode = query.get("estimate_mode", ["auto"])[0]
+    return parse_estimate_mode_value(raw_mode)
 
 
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
@@ -347,11 +351,13 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             holdings = get_holdings()
             if "holdings" in data or "text" in data:
                 _, holdings = parse_holdings_request(data, persist=False)
+            estimate_mode = parse_estimate_mode_value(data.get("estimate_mode", "auto"))
             payload = ask_assistant(
                 question=str(data.get("question", "")),
                 fund_id=str(data.get("fund_id", "")) or None,
                 cash_available=float(data.get("cash_available", 0)),
                 holdings=holdings,
+                estimate_mode=estimate_mode,
             )
         except (TypeError, ValueError) as error:
             json_response(self, {"message": str(error)}, HTTPStatus.BAD_REQUEST)
