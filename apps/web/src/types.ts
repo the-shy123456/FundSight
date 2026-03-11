@@ -186,65 +186,6 @@ export interface Forecast {
   evidence_refs?: string[];
 }
 
-export interface PredictionBasis {
-  nav_at_prediction?: number;
-  estimate_as_of?: string;
-  estimate_mode?: string;
-  evidence_refs?: string[];
-}
-
-export interface PredictionResult {
-  nav_after?: number;
-  return_after?: number;
-  direction_actual?: "up" | "down";
-  hit?: boolean;
-}
-
-export interface PredictionRecord {
-  id: string;
-  created_at: string;
-  fund_id: string;
-  fund_name?: string;
-  horizon_trading_days?: number;
-  direction?: "up" | "down";
-  probability_up?: number;
-  basis?: PredictionBasis;
-  status?: "pending" | "settled";
-  settled_at?: string;
-  result?: PredictionResult;
-}
-
-export interface PredictionStats {
-  total: number;
-  settled: number;
-  hit_rate: number;
-}
-
-export interface PredictionsResponse {
-  items: PredictionRecord[];
-  stats: PredictionStats;
-}
-
-export type PlanType = "take_profit" | "add_on_dip";
-
-export interface PlanStep {
-  trigger_pct: number;
-  action_pct: number;
-  note?: string;
-}
-
-export interface FundPlan {
-  id: string;
-  fund_id: string;
-  plan_type: PlanType;
-  steps: PlanStep[];
-  created_at: string;
-}
-
-export interface PlansResponse {
-  items: FundPlan[];
-}
-
 export interface AssistantHolding {
   current_value?: number;
   total_pnl?: number;
