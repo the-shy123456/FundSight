@@ -1,4 +1,4 @@
-export type ViewTab = "portfolio" | "library" | "config";
+export type ViewTab = "portfolio" | "library" | "watchlist" | "config";
 export type ImportTab = "manual" | "ocr";
 export type HoldingSortKey = "name" | "todayProfit" | "totalProfit";
 export type HoldingFilter = "all" | "profit" | "loss";
@@ -132,6 +132,33 @@ export interface IntradayEstimate {
   holdings_disclosure_date?: string;
   disclosed_weight_ratio?: number;
   stock_position_ratio?: number;
+}
+
+export interface WatchlistItem {
+  fund_id: string;
+  name: string;
+  name_display?: string;
+  theme?: string;
+  risk_level?: string;
+}
+
+export interface WatchlistResponse {
+  items: WatchlistItem[];
+  total: number;
+}
+
+export interface WatchlistIntradayItem extends IntradayEstimate {
+  fund_id: string;
+  name?: string;
+  name_display?: string;
+  theme?: string;
+  estimated_return?: number;
+  latest_nav?: number;
+}
+
+export interface WatchlistIntradayResponse {
+  items: WatchlistIntradayItem[];
+  total: number;
 }
 
 export interface FundCatalogItem {

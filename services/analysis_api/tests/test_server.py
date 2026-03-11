@@ -18,6 +18,12 @@ from services.analysis_api.holdings import (
     reset_holdings,
     set_holdings_storage_path,
 )
+from services.analysis_api.watchlist import (
+    add_watchlist_id,
+    clear_watchlist_storage,
+    get_watchlist_storage_path,
+    set_watchlist_storage_path,
+)
 from services.analysis_api.models import FundProfile
 from services.analysis_api.server import FundInsightHandler
 
@@ -26,15 +32,20 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 DIST_DIR = ROOT_DIR / "apps" / "web" / "dist"
 INDEX_HTML = DIST_DIR / "index.html"
 TEST_STORAGE_PATH = ROOT_DIR / ".tmp-tests" / "server-test.json"
+WATCHLIST_TEST_STORAGE_PATH = ROOT_DIR / ".tmp-tests" / "watchlist-test.json"
 
 
 class ServerRouteTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.original_storage_path = get_holdings_storage_path()
+        self.original_watchlist_path = get_watchlist_storage_path()
         TEST_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WATCHLIST_TEST_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
         set_holdings_storage_path(TEST_STORAGE_PATH)
         clear_holdings_storage()
         reset_holdings()
+        set_watchlist_storage_path(WATCHLIST_TEST_STORAGE_PATH)
+        clear_watchlist_storage()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FundInsightHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -47,6 +58,8 @@ class ServerRouteTestCase(unittest.TestCase):
         reset_holdings()
         clear_holdings_storage()
         set_holdings_storage_path(self.original_storage_path)
+        clear_watchlist_storage()
+        set_watchlist_storage_path(self.original_watchlist_path)
 
     def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         request = urllib.request.Request(
@@ -127,6 +140,42 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertTrue(payload["chart"]["series"][0]["values"])
         self.assertTrue(payload["contributions"])
 
+    def test_watchlist_get_endpoint_returns_items(self) -> None:
+        add_watchlist_id("F001")
+        add_watchlist_id("F003")
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/watchlist")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(len(payload["items"]), 2)
+        first = payload["items"][0]
+        for key in ("fund_id", "name", "name_display", "theme", "risk_level"):
+            self.assertIn(key, first)
+
+    def test_watchlist_post_endpoint_adds_items(self) -> None:
+        payload = self._post_json(
+            "/api/v1/watchlist",
+            {"fund_id": "F002"},
+        )
+        self.assertTrue(payload["added"])
+        self.assertEqual(payload["fund_id"], "F002")
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/watchlist")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["fund_id"], "F002")
+
+    def test_watchlist_delete_endpoint_removes_item(self) -> None:
+        add_watchlist_id("F001")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/v1/watchlist/F001",
+            method="DELETE",
+        )
+        response = urllib.request.urlopen(request)
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(payload["deleted"])
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/watchlist")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["total"], 0)
+
     def test_import_endpoint_replaces_holdings(self) -> None:
         payload = self._post_json(
             "/api/v1/holdings/import",
@@ -198,6 +247,23 @@ class ServerRouteTestCase(unittest.TestCase):
         payload = json.loads(response.read().decode("utf-8"))
         self.assertIn("estimate_mode", payload)
         self.assertEqual(payload["estimate_mode"], "theme_proxy")
+
+    @patch("services.analysis_api.server.estimate_fund_intraday")
+    def test_watchlist_intraday_endpoint_returns_contract(self, mock_estimate) -> None:
+        add_watchlist_id("F003")
+        mock_estimate.return_value = {
+            "fund_id": "F003",
+            "estimated_return": 0.0123,
+            "latest_nav": 1.2345,
+            "estimated_nav": 1.2496,
+        }
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/watchlist/intraday?estimate_mode=official")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["total"], 1)
+        item = payload["items"][0]
+        for key in ("fund_id", "name", "name_display", "theme", "estimated_return", "latest_nav"):
+            self.assertIn(key, item)
+        self.assertEqual(mock_estimate.call_args[1]["estimate_mode"], "official")
 
     @patch("services.analysis_api.server.load_predictions")
     @patch("services.analysis_api.server.list_predictions")

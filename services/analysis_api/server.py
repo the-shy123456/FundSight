@@ -3,6 +3,7 @@
 import json
 import mimetypes
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,7 +18,7 @@ from .assistant import ask_assistant
 from .holdings import get_holdings, import_holdings_payload, parse_holdings_payload
 from .intraday_estimator import estimate_fund_intraday
 from .models import InvestorProfile
-from .name_display import attach_name_display
+from .name_display import attach_name_display, normalize_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
 from .plans_store import append_plan, delete_plan, list_plans
@@ -33,6 +34,7 @@ from .real_data import (
 )
 from .sample_data import FUNDS
 from .forecast_grader import grade_forecast
+from .watchlist import add_watchlist_id, get_watchlist_ids, remove_watchlist_id
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -155,6 +157,49 @@ def build_prediction_stats(records: list[dict[str, Any]]) -> dict[str, object]:
     hits = sum(1 for record in settled_records if bool(record.get("result", {}).get("hit")))
     hit_rate = hits / settled if settled else 0.0
     return {"total": total, "settled": settled, "hit_rate": round(hit_rate, 4)}
+
+
+def build_watchlist_items(fund_ids: list[str]) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for fund_id in fund_ids:
+        fund = find_fund(fund_id, FUNDS)
+        if fund is None:
+            item = {"fund_id": fund_id, "name": fund_id, "theme": "", "risk_level": ""}
+        else:
+            item = {
+                "fund_id": fund.fund_id,
+                "name": fund.name,
+                "theme": fund.theme,
+                "risk_level": fund.risk_level,
+            }
+        items.append(attach_name_display(item))
+    return items
+
+
+def build_watchlist_intraday(fund_ids: list[str], estimate_mode: str) -> list[dict[str, object]]:
+    funds = [find_fund(fund_id, FUNDS) for fund_id in fund_ids]
+    resolved = [fund for fund in funds if fund is not None]
+    if not resolved:
+        return []
+
+    items: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(resolved))) as executor:
+        futures = [executor.submit(estimate_fund_intraday, fund, estimate_mode=estimate_mode) for fund in resolved]
+        for fund, future in zip(resolved, futures, strict=True):
+            try:
+                payload = future.result()
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            enriched = dict(payload)
+            name = str(enriched.get("fund_name") or fund.name)
+            enriched.setdefault("fund_id", fund.fund_id)
+            enriched.setdefault("name", name)
+            enriched.setdefault("name_display", normalize_name_display(name))
+            enriched.setdefault("theme", fund.theme)
+            items.append(enriched)
+    return items
 
 
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
@@ -281,6 +326,24 @@ class FundInsightHandler(BaseHTTPRequestHandler):
                 json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
             json_response(self, build_portfolio_intraday(estimate_mode=estimate_mode))
+            return
+
+        if parsed.path == "/api/v1/watchlist":
+            fund_ids = get_watchlist_ids()
+            items = build_watchlist_items(fund_ids)
+            json_response(self, {"items": items, "total": len(items)})
+            return
+
+        if parsed.path == "/api/v1/watchlist/intraday":
+            query = parse_qs(parsed.query)
+            try:
+                estimate_mode = parse_estimate_mode(query)
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            fund_ids = get_watchlist_ids()
+            items = build_watchlist_intraday(fund_ids, estimate_mode)
+            json_response(self, {"items": items, "total": len(items)})
             return
 
         if parsed.path == "/api/v1/funds/search":
@@ -493,6 +556,19 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             json_response(self, record, HTTPStatus.CREATED)
             return
 
+        if parsed.path == "/api/v1/watchlist":
+            data = self._read_json()
+            if data is None:
+                return
+            try:
+                fund_id = str(data.get("fund_id", "")).strip()
+                add_watchlist_id(fund_id)
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            json_response(self, {"added": True, "fund_id": fund_id})
+            return
+
         if parsed.path == "/api/v1/predictions/settle":
             self._handle_predictions_settle(parsed.query)
             return
@@ -509,6 +585,15 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             if not delete_plan(plan_id):
                 json_response(self, {"message": "计划不存在"}, HTTPStatus.NOT_FOUND)
                 return
+            json_response(self, {"deleted": True})
+            return
+
+        if parsed.path.startswith("/api/v1/watchlist/"):
+            fund_id = parsed.path.removeprefix("/api/v1/watchlist/").strip()
+            if not fund_id:
+                json_response(self, {"message": "fund_id 不能为空"}, HTTPStatus.BAD_REQUEST)
+                return
+            remove_watchlist_id(fund_id)
             json_response(self, {"deleted": True})
             return
 

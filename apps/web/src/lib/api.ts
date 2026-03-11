@@ -9,6 +9,8 @@ import type {
   PortfolioIntraday,
   PortfolioSnapshot,
   TopHoldingsResponse,
+  WatchlistIntradayResponse,
+  WatchlistResponse,
 } from "../types";
 import { normalizeFundCode, parseNumber } from "./format";
 
@@ -140,6 +142,28 @@ export async function requestPortfolio(estimateMode?: "auto" | "official" | "pen
 export async function requestPortfolioIntraday(estimateMode?: "auto" | "official" | "penetration"): Promise<PortfolioIntraday> {
   const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
   return fetchJson<PortfolioIntraday>(`/api/v1/portfolio/intraday${query}`);
+}
+
+export async function requestWatchlist(): Promise<WatchlistResponse> {
+  return fetchJson<WatchlistResponse>("/api/v1/watchlist");
+}
+
+export async function addToWatchlist(fundId: string): Promise<{ added: boolean; fund_id: string }> {
+  return fetchJson<{ added: boolean; fund_id: string }>("/api/v1/watchlist", {
+    method: "POST",
+    body: JSON.stringify({ fund_id: fundId }),
+  });
+}
+
+export async function removeFromWatchlist(fundId: string): Promise<{ deleted: boolean }> {
+  return fetchJson<{ deleted: boolean }>(`/api/v1/watchlist/${encodeURIComponent(fundId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function requestWatchlistIntraday(estimateMode?: "auto" | "official" | "penetration"): Promise<WatchlistIntradayResponse> {
+  const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
+  return fetchJson<WatchlistIntradayResponse>(`/api/v1/watchlist/intraday${query}`);
 }
 
 export async function requestAssistant(payload: {
