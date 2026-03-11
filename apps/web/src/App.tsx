@@ -2081,9 +2081,20 @@ export default function App() {
                     {manualSuggestions.length ? (
                       <div className="absolute z-20 w-full mt-1 bg-white shadow-lg border border-gray-200 rounded-lg max-h-40 overflow-y-auto">
                         {manualSuggestions.map((item) => (
-                          <button key={item.fund_id} type="button" className="w-full px-4 py-3 hover:bg-blue-50 text-sm flex justify-between text-left" onClick={() => pickSuggestion(item)}>
-                            <span className="font-medium">{resolveFundName(item.name, item.name_display) || item.name}</span><span className="text-xs text-gray-500">{item.fund_id}</span>
-                          </button>
+                          <div key={item.fund_id} className="flex items-center justify-between px-4 py-3 hover:bg-blue-50 text-sm">
+                            <button type="button" className="flex-1 text-left" onClick={() => pickSuggestion(item)}>
+                              <span className="font-medium">{resolveFundName(item.name, item.name_display) || item.name}</span>
+                              <span className="text-xs text-gray-500 ml-2">{item.fund_id}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleAddToWatchlist(item)}
+                              className="ml-3 text-xs font-medium text-gray-700 bg-gray-100 px-2.5 py-1 rounded disabled:opacity-60"
+                              disabled={watchlistIdSet.has(item.fund_id)}
+                            >
+                              {watchlistIdSet.has(item.fund_id) ? "已自选" : "加入自选"}
+                            </button>
+                          </div>
                         ))}
                       </div>
                     ) : null}
