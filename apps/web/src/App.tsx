@@ -596,7 +596,7 @@ export default function App() {
   const [catalogItems, setCatalogItems] = useState<FundCatalogItem[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogPage, setCatalogPage] = useState(1);
-  const [catalogPageSize, setCatalogPageSize] = useState(10);
+  const [catalogPageSize, setCatalogPageSize] = useState(20);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>([]);
@@ -1537,8 +1537,27 @@ export default function App() {
 
         {activeTab === "library" ? (
           <div className="h-full flex flex-col">
-            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex items-center justify-between gap-4">
-              <h2 className="text-lg font-bold text-gray-800">全市场基金库概览</h2>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div className="flex items-start md:items-center justify-between gap-4">
+                <h2 className="text-lg font-bold text-gray-800">全市场基金库概览</h2>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span className="hidden sm:inline">每页</span>
+                  <select
+                    value={catalogPageSize}
+                    onChange={(event) => {
+                      const next = Number(event.target.value) || 20;
+                      setCatalogPageSize(next);
+                      setCatalogPage(1);
+                      void loadCatalog({ query: catalogQuery, page: 1, pageSize: next });
+                    }}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+              </div>
               <div className="flex flex-col gap-2 w-full md:w-1/2">
                 <div className="flex gap-3">
                   <input
