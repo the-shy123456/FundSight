@@ -40,6 +40,7 @@ export interface DataQualitySummary {
   real_data_holding_count?: number;
   proxy_holding_count?: number;
   latest_estimate_as_of?: string;
+  display_estimate_source_label?: string;
 }
 
 export interface PortfolioPosition {
@@ -65,6 +66,7 @@ export interface PortfolioPosition {
   signal?: { label?: string; reason?: string };
   estimate_source?: string;
   estimate_source_label?: string;
+  display_estimate_source_label?: string;
   estimate_scope_label?: string;
   estimate_as_of?: string;
   holdings_disclosure_date?: string;

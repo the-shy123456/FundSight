@@ -109,6 +109,7 @@ def _build_position(
         "cautions": diagnosis["cautions"],
         "estimate_source": estimate.get("estimate_source", "unknown"),
         "estimate_source_label": estimate.get("estimate_source_label", "未知来源"),
+        "display_estimate_source_label": estimate.get("display_estimate_source_label", estimate.get("estimate_source_label", "未知来源")),
         "estimate_scope_label": estimate.get("estimate_scope_label", "收益参考"),
         "estimate_as_of": estimate.get("estimate_as_of", ""),
         "holdings_disclosure_date": estimate.get("holdings_disclosure_date", ""),
@@ -141,6 +142,7 @@ def build_portfolio_snapshot(
             "real_data_holding_count": 0,
             "proxy_holding_count": 0,
             "latest_estimate_as_of": "",
+            "display_estimate_source_label": "",
         }
         return {
             "estimate_mode": estimate_mode,
@@ -198,11 +200,22 @@ def build_portfolio_snapshot(
     real_data_holding_count = sum(1 for item in positions if bool(item["is_real_data"]))
     proxy_holding_count = len(positions) - real_data_holding_count
     latest_estimate_as_of = next((str(item["estimate_as_of"]) for item in positions if item.get("estimate_as_of")), "")
+    display_estimate_source_label = ""
+    for item in positions:
+        label = str(item.get("display_estimate_source_label") or "")
+        if not label:
+            continue
+        if bool(item.get("is_real_data")):
+            display_estimate_source_label = label
+            break
+        if not display_estimate_source_label:
+            display_estimate_source_label = label
     data_quality = {
         "holding_count": len(positions),
         "real_data_holding_count": real_data_holding_count,
         "proxy_holding_count": proxy_holding_count,
         "latest_estimate_as_of": latest_estimate_as_of,
+        "display_estimate_source_label": display_estimate_source_label,
     }
 
     signals = [

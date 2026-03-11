@@ -516,6 +516,8 @@ export default function App() {
   const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
   const latestEstimateTime = extractTimeHHMM(dataQuality?.latest_estimate_as_of);
   const estimateModeLabel = ESTIMATE_MODE_LABELS[estimateMode];
+  const displayEstimateSourceLabel = (dataQuality?.display_estimate_source_label || "").trim();
+  const autoFallbackNotice = estimateMode === "auto" && displayEstimateSourceLabel.includes("自动(穿透)") ? "自动回退到穿透" : "";
   const updateStatusText = isChinaTradingHours()
     ? `更新时间：${latestEstimateTime ?? "当前"}`
     : `已收盘/非交易时段，最后更新 ${latestEstimateTime ?? "15:00"}`;
@@ -1130,13 +1132,20 @@ export default function App() {
                     <h2 className="text-lg font-bold text-gray-800">持仓明细</h2>
                     <p className="text-xs text-slate-500 mt-1">{updateStatusWithMode}</p>
                   </div>
-                  <div className="space-x-3">
+                  <div className="flex items-center gap-3">
                     <button type="button" onClick={openImportModal} className="bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-100 transition-all font-medium inline-flex items-center">
                       <FolderPlus className="h-4 w-4 mr-1" /> 导入持仓
                     </button>
-                    <button type="button" onClick={() => void refreshPortfolioData()} className="text-sm text-gray-500 hover:text-gray-800 px-2 py-1.5 inline-flex items-center" disabled={refreshing}>
-                      {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}刷新
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right text-xs text-slate-500 leading-5">
+                        <div>估值源：{estimateModeLabel}{displayEstimateSourceLabel ? ` · ${displayEstimateSourceLabel}` : ""}</div>
+                        <div>更新时间：{latestEstimateTime ?? "当前"}</div>
+                        {autoFallbackNotice ? <div className="text-amber-600">{autoFallbackNotice}</div> : null}
+                      </div>
+                      <button type="button" onClick={() => void refreshPortfolioData()} className="text-sm text-gray-500 hover:text-gray-800 px-2 py-1.5 inline-flex items-center" disabled={refreshing}>
+                        {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}刷新
+                      </button>
+                    </div>
                   </div>
                 </div>
 
