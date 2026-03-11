@@ -621,6 +621,7 @@ def fetch_top_holdings_with_quotes(fund_code: str, limit: int = 10) -> dict[str,
                 "price": float(quote.get("price", 0.0) or 0.0),
                 "change_rate": round(change_rate, 4),
                 "contribution": round(contribution, 4),
+                "industry": str(quote.get("industry", "")),
             }
         )
 
@@ -635,7 +636,7 @@ def fetch_security_quote(secid: str) -> dict[str, Any]:
         return cached
 
     data = _fetch_json(
-        f"https://push2.eastmoney.com/api/qt/stock/get?secid={urllib.parse.quote(cache_key)}&fields=f57,f58,f43,f59,f169,f170",
+        f"https://push2.eastmoney.com/api/qt/stock/get?secid={urllib.parse.quote(cache_key)}&fields=f57,f58,f43,f59,f169,f170,f127,f128",
         ttl_seconds=30,
         referer="https://quote.eastmoney.com/",
     ).get("data")
@@ -650,6 +651,8 @@ def fetch_security_quote(secid: str) -> dict[str, Any]:
         "price": round(float(data.get("f43") or 0.0) / scale, decimals),
         "change_amount": round(float(data.get("f169") or 0.0) / scale, decimals),
         "change_rate": round(float(data.get("f170") or 0.0) / 10000, 4),
+        "industry": str(data.get("f127") or ""),
+        "region": str(data.get("f128") or ""),
     }
     return _cache_set("quote", cache_key, quote)
 

@@ -166,6 +166,7 @@ export interface NavTrendResponse {
 export interface HoldingCompanyItem {
   code: string;
   name: string;
+  industry?: string;
   weight_percent: number;
   price: number;
   change_rate: number;

@@ -695,6 +695,29 @@ export default function App() {
     const items = detailHoldings?.items ?? [];
     return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
   }, [detailHoldings]);
+  const relatedIndustries = useMemo(() => {
+    const items = detailHoldings?.items ?? [];
+    const weights = new Map<string, number>();
+    items.forEach((item) => {
+      const industry = String(item.industry ?? "").trim();
+      if (!industry) return;
+      const weight = parseNumber(item.weight_percent);
+      weights.set(industry, (weights.get(industry) ?? 0) + weight);
+    });
+    return [...weights.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 3)
+      .map(([industry]) => industry);
+  }, [detailHoldings]);
+  const relatedSectorChips = useMemo(() => {
+    const chips: string[] = [];
+    const theme = (detailFund?.theme || "").trim();
+    if (theme) chips.push(theme);
+    relatedIndustries.forEach((industry) => {
+      if (!chips.includes(industry)) chips.push(industry);
+    });
+    return chips;
+  }, [detailFund?.theme, relatedIndustries]);
   const navPoints = detailNavTrend?.points ?? [];
   const navLatest = useMemo(() => (navPoints.length ? navPoints[navPoints.length - 1]?.nav ?? 0 : 0), [navPoints]);
   const navReturnSeries = useMemo(() => computeReturnSeries(navPoints), [navPoints]);
@@ -1870,23 +1893,24 @@ export default function App() {
               </section>
 
               <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">关联板块</p>
-                    <p className="text-sm font-semibold text-gray-800 mt-1">{detailFund?.theme || "--"}</p>
+                <div>
+                  <p className="text-xs text-gray-500">关联板块/行业</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {relatedSectorChips.length ? (
+                      relatedSectorChips.map((chip) => (
+                        <button
+                          key={`related-chip-${chip}`}
+                          type="button"
+                          className="px-3 py-1.5 rounded-full text-xs font-medium border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100"
+                          onClick={() => openThemeDrawer(chip)}
+                        >
+                          {chip}
+                        </button>
+                      ))
+                    ) : (
+                      <span className="text-xs text-gray-400">暂无可用板块/行业信息。</span>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
-                    disabled={!detailFund?.theme}
-                    onClick={() => {
-                      const theme = detailFund?.theme?.trim();
-                      if (!theme) return;
-                      openThemeDrawer(theme);
-                    }}
-                  >
-                    查看同板块基金
-                  </button>
                 </div>
               </section>
 

@@ -273,6 +273,7 @@ class ServerRouteTestCase(unittest.TestCase):
                     "price": 1800.0,
                     "change_rate": 0.0123,
                     "contribution": 0.0012,
+                    "industry": "白酒",
                 }
             ],
         }
@@ -282,7 +283,7 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("items", payload)
         self.assertTrue(payload["items"])
         first = payload["items"][0]
-        for key in ("code", "name", "weight_percent", "price", "change_rate", "contribution"):
+        for key in ("code", "name", "weight_percent", "price", "change_rate", "contribution", "industry"):
             self.assertIn(key, first)
 
     @patch("services.analysis_api.intraday_estimator.fetch_fund_estimate")
