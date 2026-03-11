@@ -17,7 +17,7 @@ from .name_display import attach_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
 from .research import build_research_brief
-from .real_data import fetch_fund_catalog, search_real_funds
+from .real_data import fetch_fund_announcements, fetch_fund_catalog, is_real_fund_code, search_real_funds
 from .sample_data import FUNDS
 
 
@@ -185,6 +185,35 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/v1/funds/"):
             relative_path = parsed.path.removeprefix("/api/v1/funds/")
+            if relative_path.endswith("/announcements"):
+                fund_id = relative_path.removesuffix("/announcements")
+                query = parse_qs(parsed.query)
+                try:
+                    limit = parse_search_limit(query.get("limit", [None])[0])
+                except ValueError as exc:
+                    json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                if is_real_fund_code(fund_id):
+                    try:
+                        payload = fetch_fund_announcements(fund_id, page=1, per=limit)
+                    except Exception:
+                        json_response(self, {"message": "公告抓取失败"}, HTTPStatus.BAD_GATEWAY)
+                        return
+                else:
+                    fund = find_fund(fund_id, FUNDS)
+                    if not fund:
+                        json_response(self, {"message": "基金不存在"}, HTTPStatus.NOT_FOUND)
+                        return
+                    payload = {"items": [], "total": 0}
+                json_response(
+                    self,
+                    {
+                        "fund_id": fund_id,
+                        "items": payload.get("items", []),
+                        "total": payload.get("total", len(payload.get("items", []))),
+                    },
+                )
+                return
             if relative_path.endswith("/snapshot"):
                 fund_id = relative_path.removesuffix("/snapshot")
                 fund = find_fund(fund_id, FUNDS)

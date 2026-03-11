@@ -312,11 +312,127 @@ def fetch_fund_estimate(fund_code: str) -> dict[str, Any]:
     return _cache_set("estimate", cache_key, payload)
 
 
-def _extract_apidata_content(source: str) -> str:
-    match = re.search(r'content:\"(.*?)\",arryear:', source, re.S)
+def _extract_apidata_content_any(source: str) -> str:
+    match = re.search(r'content\s*:\s*"((?:\\.|[^"\\])*)"', source, re.S)
+    if match is None:
+        match = re.search(r"content\s*:\s*'((?:\\.|[^'\\])*)'", source, re.S)
     if match is None:
         return ""
-    return html.unescape(json.loads(f'"{match.group(1)}"'))
+    raw = match.group(1)
+    try:
+        decoded = json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        decoded = raw.replace("\\/", "/")
+    return html.unescape(decoded)
+
+
+def _extract_apidata_content(source: str) -> str:
+    return _extract_apidata_content_any(source)
+
+
+def _normalize_eastmoney_url(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return f"https:{url}"
+    if url.startswith("/"):
+        return f"https://fundf10.eastmoney.com{url}"
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return f"https://fundf10.eastmoney.com/{url}"
+
+
+def fetch_fund_announcements(fund_code: str, page: int = 1, per: int = 20) -> dict[str, Any]:
+    cache_key = f"{fund_code}:{page}:{per}"
+    cached = _cache_get("announcements", cache_key, 300)
+    if cached is not None:
+        return cached
+
+    source = _fetch_text(
+        "https://fundf10.eastmoney.com/F10DataApi.aspx"
+        f"?type=jjgg&code={urllib.parse.quote(fund_code)}&page={int(page)}&per={int(per)}",
+        ttl_seconds=300,
+        referer=f"https://fundf10.eastmoney.com/jjgg_{fund_code}.html",
+    )
+    html_text = _extract_apidata_content_any(source)
+    if "暂无数据" in html_text:
+        payload = {"items": [], "total": 0, "page": int(page), "page_size": int(per)}
+        return _cache_set("announcements", cache_key, payload)
+
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, re.S)
+    items: list[dict[str, Any]] = []
+    date_pattern = re.compile(r"\d{4}-\d{2}-\d{2}")
+    for row in rows:
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
+        if not cells:
+            continue
+        hrefs = [
+            href
+            for href in re.findall(r'href=[\'"]([^\'"]+)[\'"]', row, re.I)
+            if not href.lower().startswith("javascript")
+        ]
+        url = ""
+        pdf_url = ""
+        for href in hrefs:
+            normalized = _normalize_eastmoney_url(href.strip())
+            if ".pdf" in normalized.lower():
+                if not pdf_url:
+                    pdf_url = normalized
+            elif not url:
+                url = normalized
+
+        title = ""
+        announcement_type = ""
+        announcement_date = ""
+
+        title_cell_index = None
+        for idx, cell in enumerate(cells):
+            if "<a" in cell.lower():
+                title_cell_index = idx
+                anchor_match = re.search(r"<a[^>]*>(.*?)</a>", cell, re.S)
+                if anchor_match:
+                    title = re.sub(r"<.*?>", "", anchor_match.group(1), flags=re.S).strip()
+                else:
+                    title = re.sub(r"<.*?>", "", cell, flags=re.S).strip()
+                break
+
+        for idx, cell in enumerate(cells):
+            clean = re.sub(r"<.*?>", "", cell, flags=re.S).strip()
+            match = date_pattern.search(clean)
+            if match:
+                announcement_date = match.group(0)
+                if title_cell_index is None and not title:
+                    title = clean
+                break
+
+        cleaned_cells = [re.sub(r"<.*?>", "", cell, flags=re.S).strip() for cell in cells]
+        if not title:
+            candidates = [value for value in cleaned_cells if value and not date_pattern.search(value)]
+            if candidates:
+                title = max(candidates, key=len)
+        for idx, value in enumerate(cleaned_cells):
+            if idx == title_cell_index:
+                continue
+            if value and not date_pattern.search(value):
+                announcement_type = value
+                break
+
+        if not title:
+            continue
+        items.append(
+            {
+                "title": title,
+                "type": announcement_type,
+                "date": announcement_date,
+                "url": url,
+                "pdf_url": pdf_url,
+            }
+        )
+
+    records_match = re.search(r"records\s*:\s*(\d+)", source)
+    total = int(records_match.group(1)) if records_match else len(items)
+    payload = {"items": items, "total": total, "page": int(page), "page_size": int(per)}
+    return _cache_set("announcements", cache_key, payload)
 
 
 def fetch_top_holdings(fund_code: str, topline: int = 10) -> dict[str, Any]:

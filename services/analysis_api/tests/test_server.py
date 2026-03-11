@@ -209,6 +209,29 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertEqual(payload["estimate_source_label"], "官方估值+持仓穿透")
         self.assertTrue(payload["is_real_data"])
 
+    @patch("services.analysis_api.server.fetch_fund_announcements")
+    def test_fund_announcements_endpoint_returns_items(self, mock_fetch) -> None:
+        mock_fetch.return_value = {
+            "items": [
+                {
+                    "title": "关于基金经理变更的公告",
+                    "type": "临时公告",
+                    "date": "2026-03-10",
+                    "url": "https://fundf10.eastmoney.com/notice1.html",
+                    "pdf_url": "https://pdf.dfcfw.com/pdf/AAA.pdf",
+                }
+            ],
+            "total": 1,
+        }
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/announcements?limit=3")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["fund_id"], "005827")
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(len(payload["items"]), 1)
+        first = payload["items"][0]
+        for key in ("title", "type", "date", "url", "pdf_url"):
+            self.assertIn(key, first)
+
     @patch("services.analysis_api.intraday_estimator.fetch_fund_estimate")
     @patch("services.analysis_api.intraday_estimator.estimate_real_fund_intraday")
     @patch("services.analysis_api.holdings.build_real_fund_profile")
@@ -342,6 +365,20 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertTrue(payload["evidence"])
         self.assertTrue(payload["actions"])
         self.assertIn("confidence", payload)
+
+    def test_assistant_endpoint_returns_forecast(self) -> None:
+        payload = self._post_json(
+            "/api/v1/assistant/ask",
+            {
+                "question": "未来几天会怎么走？",
+                "fund_id": "F003",
+                "cash_available": 1200,
+            },
+        )
+        self.assertIn("forecast", payload)
+        forecast = payload["forecast"]
+        self.assertEqual(forecast["horizon_trading_days"], 5)
+        self.assertIn(forecast["direction"], {"up", "down"})
 
     def test_assistant_endpoint_accepts_inline_holdings(self) -> None:
         payload = self._post_json(

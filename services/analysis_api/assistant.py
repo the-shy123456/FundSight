@@ -4,6 +4,8 @@ from .analytics import build_diagnosis, fund_metrics
 from .holdings import HoldingLot, get_holdings
 from .intraday_estimator import estimate_fund_intraday
 from .portfolio import find_fund, find_position
+from .real_data import fetch_fund_announcements, is_real_fund_code
+from .research import NEGATIVE_KEYWORDS, POSITIVE_KEYWORDS
 from .sample_data import FUNDS
 
 
@@ -21,6 +23,94 @@ def _pick_fund_id(
     if holdings:
         return holdings[0].fund_id
     return None
+
+
+ANNOUNCEMENT_POSITIVE_KEYWORDS = (
+    *POSITIVE_KEYWORDS,
+    "分红",
+    "收益分配",
+    "开放申购",
+    "恢复申购",
+)
+ANNOUNCEMENT_NEGATIVE_KEYWORDS = (
+    *NEGATIVE_KEYWORDS,
+    "暂停申购",
+    "暂停赎回",
+    "基金经理变更",
+    "经理变更",
+    "离任",
+    "清盘",
+    "巨额赎回",
+)
+
+
+def _clamp(value: float, floor: float, ceiling: float) -> float:
+    return max(floor, min(ceiling, value))
+
+
+def _count_keyword_hits(texts: list[str], keywords: tuple[str, ...]) -> int:
+    lowered = " ".join(texts).lower()
+    return sum(lowered.count(keyword.lower()) for keyword in keywords)
+
+
+def _build_announcement_evidence(items: list[dict[str, object]]) -> dict[str, str]:
+    if not items:
+        return {
+            "label": "最新公告（东财 fundf10）",
+            "value": "暂无",
+            "detail": "暂无最新公告或该基金为样例数据。来源：东财 fundf10。",
+        }
+
+    lines: list[str] = []
+    for item in items[:3]:
+        title = str(item.get("title") or "未命名公告")
+        date = str(item.get("date") or "未知日期")
+        url = str(item.get("url") or "")
+        pdf_url = str(item.get("pdf_url") or "")
+        suffix = ""
+        if url or pdf_url:
+            suffix = f" (url: {url or '无'}; pdf: {pdf_url or '无'})"
+        lines.append(f"{date} {title}{suffix}")
+    detail = "；".join(lines) + "。来源：东财 fundf10。"
+    return {"label": "最新公告（东财 fundf10）", "value": f"{len(items[:3])} 条", "detail": detail}
+
+
+def _build_direction_forecast(
+    metrics: dict[str, float],
+    announcements: list[dict[str, object]],
+    evidence_labels: list[str],
+) -> dict[str, object]:
+    titles = [str(item.get("title") or "") for item in announcements if str(item.get("title") or "")]
+    positive_hits = _count_keyword_hits(titles, ANNOUNCEMENT_POSITIVE_KEYWORDS)
+    negative_hits = _count_keyword_hits(titles, ANNOUNCEMENT_NEGATIVE_KEYWORDS)
+    announcement_score = _clamp((positive_hits - negative_hits) * 0.04, -0.16, 0.16)
+
+    momentum_score = _clamp(metrics.get("momentum", 0.0) * 1.6, -0.12, 0.12)
+    drawdown_score = _clamp((0.04 - metrics.get("max_drawdown", 0.0)) * 0.8, -0.06, 0.06)
+    volatility_penalty = _clamp((metrics.get("volatility", 0.0) - 0.012) * 1.2, -0.03, 0.07)
+
+    raw_score = 0.5 + momentum_score + drawdown_score - volatility_penalty + announcement_score
+    probability_up = round(_clamp(raw_score, 0.1, 0.9), 2)
+    direction = "up" if probability_up >= 0.5 else "down"
+
+    rationale: list[str] = [
+        f"近 3 期动量 {metrics.get('momentum', 0.0) * 100:.2f}% 为短线方向提供基准。",
+        f"波动率 {metrics.get('volatility', 0.0) * 100:.2f}%、最大回撤 {metrics.get('max_drawdown', 0.0) * 100:.2f}% 用于调节置信度。",
+    ]
+    if positive_hits or negative_hits:
+        rationale.append(f"公告标题出现正向词 {positive_hits} 个、负向词 {negative_hits} 个，公告因子优先加权。")
+    else:
+        rationale.append("最新公告未出现明显正负催化，预测更依赖净值动量与回撤。")
+    if any(keyword in " ".join(titles) for keyword in ("经理变更", "离任", "增聘", "更换")):
+        rationale.append("公告涉及基金经理变更或离任等字样，短期不确定性偏高。")
+
+    return {
+        "horizon_trading_days": 5,
+        "direction": direction,
+        "probability_up": probability_up,
+        "rationale": rationale,
+        "evidence_refs": evidence_labels,
+    }
 
 
 def ask_assistant(
@@ -43,6 +133,13 @@ def ask_assistant(
     metrics = fund_metrics(fund)
     diagnosis = build_diagnosis(fund)
     position = find_position(fund.fund_id, active_holdings, FUNDS)
+    announcement_items: list[dict[str, object]] = []
+    if is_real_fund_code(fund.fund_id):
+        try:
+            announcements_payload = fetch_fund_announcements(fund.fund_id, page=1, per=3)
+            announcement_items = list(announcements_payload.get("items") or [])[:3]
+        except Exception:
+            announcement_items = []
 
     wants_to_sell = any(keyword in clean_question for keyword in ("卖", "止盈", "清仓", "落袋"))
     wants_to_buy_back = any(keyword in clean_question for keyword in ("跌", "回落", "再买", "接回", "补仓"))
@@ -127,6 +224,18 @@ def ask_assistant(
                 "detail": "披露越新，穿透估算通常越有参考价值。",
             }
         )
+    evidence.append(_build_announcement_evidence(announcement_items))
+
+    forecast = _build_direction_forecast(
+        metrics,
+        announcement_items,
+        ["最新公告（东财 fundf10）", "近 3 期动量", "最大回撤"],
+    )
+    direction_label = "上涨" if forecast["direction"] == "up" else "下跌"
+    direction_probability = float(forecast["probability_up"])
+    if forecast["direction"] != "up":
+        direction_probability = 1 - direction_probability
+    summary = f"{summary} 未来5个交易日方向预测：{direction_label}（概率{direction_probability * 100:.0f}%）。"
 
     actions = [
         {
@@ -173,6 +282,7 @@ def ask_assistant(
         "scenarios": scenarios,
         "evidence": evidence,
         "actions": actions,
+        "forecast": forecast,
         "risks": risks,
         "confidence": {
             "score": estimate["confidence"]["score"],
