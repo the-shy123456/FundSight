@@ -21,19 +21,73 @@ HTTP_HEADERS = {
 CACHE: dict[tuple[str, str], tuple[float, Any]] = {}
 DEFAULT_REAL_FUND_CODES = ("005827", "161725", "002190")
 THEME_RULES = (
+    # Power grid / utilities supply chain
     ("电网设备", "电网设备"),
+    ("特高压", "电网设备"),
     ("电网", "电网设备"),
     ("电力设备", "电网设备"),
-    ("白酒", "白酒消费"),
-    ("酒", "白酒消费"),
-    ("新能源", "新能源"),
-    ("纳斯达克", "美股科技"),
+
+    # Semiconductors
+    ("光刻", "半导体"),
+    ("芯片", "半导体"),
     ("半导体", "半导体"),
-    ("医药", "医药创新"),
-    ("红利", "红利价值"),
+
+    # Healthcare
+    ("创新药", "医药"),
+    ("医药", "医药"),
+
+    # Energy transition
+    ("新能源汽车", "新能源"),
+    ("锂电", "新能源"),
+    ("电池", "新能源"),
+    ("光伏", "新能源"),
+    ("风电", "新能源"),
+    ("新能源", "新能源"),
+
+    # Dividend / value
+    ("高股息", "红利"),
+    ("红利", "红利"),
+
+    # Consumption
+    ("食品饮料", "消费"),
+    ("白酒", "消费"),
+    ("消费", "消费"),
+
+    # Financials
+    ("券商", "券商"),
+    ("证券", "券商"),
+    ("银行", "银行"),
+
+    # Metals / commodities
+    ("黄金", "黄金"),
+    ("有色", "有色金属"),
+    ("煤炭", "煤炭"),
+
+    # Defense
+    ("国防", "军工"),
+    ("军工", "军工"),
+
+    # TMT
+    ("人工智能", "AI"),
+    ("机器人", "机器人"),
+    ("互联网", "互联网"),
+    ("游戏", "传媒"),
+    ("传媒", "传媒"),
+    ("软件", "计算机"),
+    ("计算机", "计算机"),
+    ("通信", "通信"),
+    ("5G", "通信"),
+
+    # Markets
+    ("纳斯达克", "美股科技"),
+    ("标普", "美股"),
+    ("恒生", "港股"),
+    ("港股", "港股"),
+    ("中概", "中概"),
+
+    # Style words (keep them late; they are broad)
     ("蓝筹", "蓝筹价值"),
     ("科技", "科技成长"),
-    ("债", "稳健收益"),
 )
 
 
@@ -209,11 +263,96 @@ def _infer_risk_level(category: str, stock_position_ratio: float) -> str:
     return "low"
 
 
-def _infer_theme(name: str) -> str:
+_TAG_STRIPPER = re.compile(r"<[^>]+>")
+
+
+def _strip_html(value: str) -> str:
+    if not value:
+        return ""
+    return html.unescape(_TAG_STRIPPER.sub("", value)).strip()
+
+
+def _infer_theme(text: str) -> str:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return ""
     for keyword, theme in THEME_RULES:
-        if keyword in name:
+        if keyword in clean_text:
             return theme
-    return "均衡成长"
+    return ""
+
+
+def fetch_fund_overview(fund_code: str) -> dict[str, str]:
+    """Fetch basic overview fields from fundf10 'jbgk' page.
+
+    We use HTML parsing (no extra deps) and cache heavily.
+    """
+    cache_key = fund_code.strip()
+    cached = _cache_get("overview", cache_key, 86400)
+    if cached is not None:
+        return cached
+
+    url = f"https://fundf10.eastmoney.com/jbgk_{cache_key}.html"
+    html_text = _fetch_text(url, ttl_seconds=86400, referer="https://fundf10.eastmoney.com/")
+
+    def extract(label: str) -> str:
+        # Example: <th>基金类型</th><td>指数型-股票</td>
+        match = re.search(rf"{re.escape(label)}</th>\s*<td[^>]*>(.*?)</td>", html_text, re.S)
+        if match is None:
+            match = re.search(rf"<th[^>]*>{re.escape(label)}</th>\s*<td[^>]*>(.*?)</td>", html_text, re.S)
+        if match is None:
+            return ""
+        return _strip_html(match.group(1))
+
+    payload = {
+        "fund_type": extract("基金类型"),
+        "track_target": extract("跟踪标的"),
+        "benchmark": extract("业绩比较基准"),
+    }
+    return _cache_set("overview", cache_key, payload)
+
+
+def infer_theme_for_fund(name: str, category: str, fund_code: str) -> str:
+    """Infer a human-friendly theme label.
+
+    - Prefer name keyword matches.
+    - For index/ETF funds, try tracking target from overview page.
+    - For bond funds, return a conservative type label.
+    """
+    theme = _infer_theme(name)
+    if theme:
+        return theme
+
+    normalized_category = (category or "").strip()
+    if normalized_category == "债券型":
+        return "债券"
+
+    is_index_like = (
+        normalized_category == "指数型"
+        or "ETF" in (name or "")
+        or "指数" in (name or "")
+        or "联接" in (name or "")
+    )
+    if is_index_like and is_real_fund_code(fund_code):
+        try:
+            overview = fetch_fund_overview(fund_code)
+        except Exception:
+            overview = {}
+        track_target = (overview.get("track_target") or "").strip()
+        if track_target:
+            theme = _infer_theme(track_target)
+            if theme:
+                return theme
+            # Sometimes a theme appears only when combining both.
+            theme = _infer_theme(f"{name} {track_target}")
+            if theme:
+                return theme
+
+    # QDII fallback label
+    if normalized_category == "QDII":
+        return "QDII"
+
+    return ""
 
 
 def _format_nav_date(timestamp_ms: int) -> str:
@@ -367,7 +506,7 @@ def build_real_fund_profile(fund_code: str) -> FundProfile:
         manager=manager_name,
         manager_tenure_years=manager_tenure_years,
         fee_rate=fee_rate,
-        theme=_infer_theme(name),
+        theme=infer_theme_for_fund(name, category, cache_key),
         nav_history=nav_history,
     )
     return _cache_set("profile", cache_key, profile)
@@ -928,7 +1067,7 @@ def _search_item_to_payload(item: dict[str, Any]) -> dict[str, Any]:
         'fund_id': fund_id,
         'name': name,
         'category': category,
-        'theme': _infer_theme(name),
+        'theme': infer_theme_for_fund(name, category, fund_id),
         'risk_level': _infer_search_risk(category),
     }
 
@@ -1015,7 +1154,7 @@ def _build_catalog_item_from_rank_row(row: str) -> dict[str, Any] | None:
         "fund_id": fund_id,
         "name": name,
         "category": category,
-        "theme": _infer_theme(name),
+        "theme": infer_theme_for_fund(name, category, fund_id),
         "risk_level": risk_level,
         "manager": "",
         "latest_nav": round(latest_nav, 4) if latest_nav else 0.0,
