@@ -2,6 +2,7 @@ import type {
   AssistantResponse,
   FundCatalogItem,
   FundCatalogResponse,
+  IntradayEstimate,
   ManualRow,
   NavTrendResponse,
   OcrResponse,
@@ -108,8 +109,9 @@ export async function requestHoldingsOcr(file: File): Promise<OcrResponse> {
   });
 }
 
-export async function requestIntradayEstimate(code: string): Promise<{ estimated_nav?: number; latest_nav?: number }> {
-  return fetchJson<{ estimated_nav?: number; latest_nav?: number }>(`/api/v1/funds/${encodeURIComponent(code)}/intraday-estimate`);
+export async function requestIntradayEstimate(code: string, estimateMode?: "auto" | "official" | "penetration"): Promise<IntradayEstimate> {
+  const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
+  return fetchJson<IntradayEstimate>(`/api/v1/funds/${encodeURIComponent(code)}/intraday-estimate${query}`);
 }
 
 export async function buildImportTextFromRows(rows: ManualRow[]): Promise<string> {

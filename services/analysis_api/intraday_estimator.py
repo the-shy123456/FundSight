@@ -355,6 +355,8 @@ def _build_official_estimate_only_payload(fund: FundProfile) -> dict[str, object
         "estimated_return": official_return,
         "estimated_intraday_return": official_return,
         "official_estimated_return": official_return,
+        "disclosed_weight_ratio": None,
+        "stock_position_ratio": None,
         "estimated_return_series": [0.0, official_return],
         "labels": labels,
         "series": series,

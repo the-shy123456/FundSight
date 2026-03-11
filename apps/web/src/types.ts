@@ -121,6 +121,17 @@ export interface PortfolioIntraday {
   disclaimer?: string;
 }
 
+export interface IntradayEstimate {
+  estimated_nav?: number;
+  latest_nav?: number;
+  estimate_mode?: string;
+  display_estimate_source_label?: string;
+  estimate_as_of?: string;
+  holdings_disclosure_date?: string;
+  disclosed_weight_ratio?: number;
+  stock_position_ratio?: number;
+}
+
 export interface FundCatalogItem {
   fund_id: string;
   name: string;

@@ -769,6 +769,8 @@ def estimate_real_fund_intraday(fund: FundProfile) -> dict[str, Any]:
         "estimated_intraday_return": round(official_return, 4),
         "penetration_estimated_return": round(penetration_return, 4),
         "official_estimated_return": round(official_return, 4),
+        "disclosed_weight_ratio": round(disclosed_weight_ratio, 4),
+        "stock_position_ratio": round(stock_position_ratio, 4),
         "estimated_return_series": [0.0, round(official_return, 4)],
         "labels": labels,
         "series": series,

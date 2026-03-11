@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   buildImportTextFromRows,
+  requestIntradayEstimate,
   requestAssistant,
   requestFundSearch,
   requestFundNavTrend,
@@ -55,6 +56,7 @@ import type {
   FundCatalogItem,
   ImportTab,
   ManualRow,
+  IntradayEstimate,
   NavTrendPoint,
   NavTrendResponse,
   PortfolioIntraday,
@@ -206,6 +208,14 @@ function buildNavPolyline(points: NavTrendPoint[], width = 600, height = 180, pa
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
+}
+
+function computeIntervalReturn(points: NavTrendPoint[]): number | null {
+  if (!points.length) return null;
+  const first = points[0]?.nav ?? 0;
+  const last = points[points.length - 1]?.nav ?? 0;
+  if (!first || !last) return null;
+  return last / first - 1;
 }
 
 function nowLabel(): string {
@@ -477,6 +487,9 @@ export default function App() {
   const [detailNavTrend, setDetailNavTrend] = useState<NavTrendResponse | null>(null);
   const [detailHoldings, setDetailHoldings] = useState<TopHoldingsResponse | null>(null);
   const [detailPredictions, setDetailPredictions] = useState<PredictionsResponse | null>(null);
+  const [detailEstimate, setDetailEstimate] = useState<IntradayEstimate | null>(null);
+  const [detailIntervalReturns, setDetailIntervalReturns] = useState<Record<NavRange, number | null> | null>(null);
+  const [detailIntervalLoading, setDetailIntervalLoading] = useState(false);
   const [detailNavLoading, setDetailNavLoading] = useState(false);
   const [detailHoldingsLoading, setDetailHoldingsLoading] = useState(false);
   const [detailPredictionsLoading, setDetailPredictionsLoading] = useState(false);
@@ -496,6 +509,7 @@ export default function App() {
   const navTrendRequestIdRef = useRef(0);
   const holdingsRequestIdRef = useRef(0);
   const predictionsRequestIdRef = useRef(0);
+  const intervalReturnsRequestIdRef = useRef(0);
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
@@ -529,8 +543,51 @@ export default function App() {
       latest: values[values.length - 1],
     };
   }, [navPoints]);
+  const intervalReturns = detailIntervalReturns ?? {
+    "1m": null,
+    "3m": null,
+    "6m": null,
+    "1y": null,
+    "all": null,
+  };
   const predictionItems = detailPredictions?.items ?? [];
   const predictionStats = detailPredictions?.stats ?? { total: 0, settled: 0, hit_rate: 0 };
+  const disclosureWarning = useMemo(() => {
+    const disclosureDate =
+      (detailEstimate?.holdings_disclosure_date || detailHoldings?.disclosure_date || detailFund?.holdings_disclosure_date || "").trim();
+    let disclosureDays: number | null = null;
+    if (disclosureDate) {
+      const parsed = new Date(`${disclosureDate}T00:00:00`);
+      if (!Number.isNaN(parsed.getTime())) {
+        const diffMs = Date.now() - parsed.getTime();
+        disclosureDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      }
+    }
+
+    const disclosedWeight =
+      typeof detailEstimate?.disclosed_weight_ratio === "number" ? detailEstimate.disclosed_weight_ratio : null;
+    const stockPosition =
+      typeof detailEstimate?.stock_position_ratio === "number" ? detailEstimate.stock_position_ratio : null;
+    const coverageRatio =
+      disclosedWeight !== null
+        ? stockPosition && stockPosition > 0
+          ? disclosedWeight / stockPosition
+          : disclosedWeight
+        : null;
+
+    const warnFreshness = disclosureDays !== null && disclosureDays > 90;
+    const warnCoverage = coverageRatio !== null && coverageRatio < 0.5;
+    if (!warnFreshness && !warnCoverage) return null;
+
+    const fragments: string[] = [];
+    if (warnFreshness) {
+      fragments.push(`披露日期已超过 90 天${disclosureDate ? `（${disclosureDate}）` : ""}`);
+    }
+    if (warnCoverage) {
+      fragments.push(`前十大持仓覆盖率约 ${(coverageRatio * 100).toFixed(1)}%`);
+    }
+    return fragments.join("，") || "披露与穿透信息存在滞后或覆盖不足";
+  }, [detailEstimate, detailFund?.holdings_disclosure_date, detailHoldings?.disclosure_date]);
 
   useEffect(() => {
     saveManualRows(manualRows);
@@ -727,6 +784,53 @@ export default function App() {
     }
   }
 
+  async function loadIntervalReturns(fundId: string) {
+    if (!fundId) return;
+    const requestId = intervalReturnsRequestIdRef.current + 1;
+    intervalReturnsRequestIdRef.current = requestId;
+    setDetailIntervalLoading(true);
+    setDetailNotice("");
+    const ranges: NavRange[] = ["1m", "3m", "6m", "1y", "all"];
+    try {
+      const responses = await Promise.all(
+        ranges.map((range) => requestFundNavTrend(fundId, range).catch(() => null)),
+      );
+      if (intervalReturnsRequestIdRef.current !== requestId) return;
+      const next: Record<NavRange, number | null> = {
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "1y": null,
+        "all": null,
+      };
+      responses.forEach((response, index) => {
+        if (!response) return;
+        const range = ranges[index];
+        next[range] = computeIntervalReturn(response.points);
+      });
+      setDetailIntervalReturns(next);
+    } catch (error) {
+      if (intervalReturnsRequestIdRef.current !== requestId) return;
+      setDetailIntervalReturns(null);
+      setDetailNotice(error instanceof Error ? error.message : "区间收益加载失败。");
+    } finally {
+      if (intervalReturnsRequestIdRef.current === requestId) {
+        setDetailIntervalLoading(false);
+      }
+    }
+  }
+
+  async function loadFundEstimate(fundId: string) {
+    if (!fundId) return;
+    setDetailEstimate(null);
+    try {
+      const payload = await requestIntradayEstimate(fundId, estimateMode);
+      setDetailEstimate(payload);
+    } catch {
+      setDetailEstimate(null);
+    }
+  }
+
   async function loadTopHoldings(fundId: string) {
     if (!fundId) return;
     const requestId = holdingsRequestIdRef.current + 1;
@@ -791,10 +895,14 @@ export default function App() {
     setDetailNavTrend(null);
     setDetailHoldings(null);
     setDetailPredictions(null);
+    setDetailEstimate(null);
+    setDetailIntervalReturns(null);
     setDetailNotice("");
     setDetailPredictionsNotice("");
     void loadNavTrend(item.fund_id, "6m");
+    void loadIntervalReturns(item.fund_id);
     void loadTopHoldings(item.fund_id);
+    void loadFundEstimate(item.fund_id);
     void loadFundPredictions(item.fund_id, 50);
   }
 
@@ -1326,6 +1434,32 @@ export default function App() {
                   <span>最高 {navSummary.max ? navSummary.max.toFixed(4) : "--"}</span>
                 </div>
               </section>
+
+              <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-gray-800">区间收益</h4>
+                  <span className="text-xs text-gray-500">按净值曲线首末点估算</span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  {NAV_RANGE_OPTIONS.map((option) => {
+                    const value = intervalReturns[option.value];
+                    const display = typeof value === "number" ? formatSignedPercent(value) : detailIntervalLoading ? "加载中..." : "--";
+                    return (
+                      <div key={option.value} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-xs text-slate-500">{option.label}</div>
+                        <div className={`mt-1 text-sm font-semibold ${toneClass(value ?? 0)}`}>{display}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {disclosureWarning ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+                  <div className="font-semibold text-amber-800">披露与穿透警告</div>
+                  <div className="mt-1 leading-5">{disclosureWarning}</div>
+                </div>
+              ) : null}
 
               <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
                 <div className="flex items-center justify-between">
