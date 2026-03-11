@@ -172,6 +172,45 @@ export interface Forecast {
   evidence_refs?: string[];
 }
 
+export interface PredictionBasis {
+  nav_at_prediction?: number;
+  estimate_as_of?: string;
+  estimate_mode?: string;
+  evidence_refs?: string[];
+}
+
+export interface PredictionResult {
+  nav_after?: number;
+  return_after?: number;
+  direction_actual?: "up" | "down";
+  hit?: boolean;
+}
+
+export interface PredictionRecord {
+  id: string;
+  created_at: string;
+  fund_id: string;
+  fund_name?: string;
+  horizon_trading_days?: number;
+  direction?: "up" | "down";
+  probability_up?: number;
+  basis?: PredictionBasis;
+  status?: "pending" | "settled";
+  settled_at?: string;
+  result?: PredictionResult;
+}
+
+export interface PredictionStats {
+  total: number;
+  settled: number;
+  hit_rate: number;
+}
+
+export interface PredictionsResponse {
+  items: PredictionRecord[];
+  stats: PredictionStats;
+}
+
 export interface AssistantHolding {
   current_value?: number;
   total_pnl?: number;

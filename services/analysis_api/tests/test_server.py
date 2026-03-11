@@ -199,6 +199,24 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertIn("estimate_mode", payload)
         self.assertEqual(payload["estimate_mode"], "theme_proxy")
 
+    @patch("services.analysis_api.server.load_predictions")
+    @patch("services.analysis_api.server.list_predictions")
+    def test_fund_predictions_endpoint_returns_stats(self, mock_list_predictions, mock_load_predictions) -> None:
+        records = [
+            {"id": "pred-1", "fund_id": "F001", "status": "settled", "result": {"hit": True}},
+            {"id": "pred-2", "fund_id": "F001", "status": "pending"},
+        ]
+        mock_load_predictions.return_value = records
+        mock_list_predictions.return_value = records
+
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/F001/predictions?limit=50")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("items", payload)
+        self.assertIn("stats", payload)
+        self.assertEqual(payload["stats"]["total"], 2)
+        self.assertEqual(payload["stats"]["settled"], 1)
+        self.assertEqual(payload["stats"]["hit_rate"], 1.0)
+
     def test_real_fund_intraday_estimate_endpoint_returns_key_fields(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/intraday-estimate")
         payload = json.loads(response.read().decode("utf-8"))

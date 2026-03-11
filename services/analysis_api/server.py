@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .analytics import build_dashboard_snapshot, build_diagnosis, build_fund_snapshot, recommend_portfolio
 from .assistant import ask_assistant
@@ -17,6 +19,7 @@ from .models import InvestorProfile
 from .name_display import attach_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
+from .predictions_store import list_predictions, load_predictions, overwrite_predictions
 from .research import build_research_brief
 from .real_data import (
     fetch_fund_announcements,
@@ -27,6 +30,7 @@ from .real_data import (
     search_real_funds,
 )
 from .sample_data import FUNDS
+from .forecast_grader import grade_forecast
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -90,6 +94,18 @@ def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
     return limit
 
 
+def parse_prediction_limit(raw_limit: str | None, default: int = 50) -> int:
+    if raw_limit is None:
+        return default
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit 必须是数字") from exc
+    if not 1 <= limit <= 200:
+        raise ValueError("limit 必须在 1-200 之间")
+    return limit
+
+
 def parse_top_holdings_limit(raw_limit: str | None, default: int = 10) -> int:
     if raw_limit is None:
         return default
@@ -130,6 +146,15 @@ def parse_estimate_mode(query: dict[str, list[str]]) -> str:
     return parse_estimate_mode_value(raw_mode)
 
 
+def build_prediction_stats(records: list[dict[str, Any]]) -> dict[str, object]:
+    total = len(records)
+    settled_records = [record for record in records if str(record.get("status", "")).lower() == "settled"]
+    settled = len(settled_records)
+    hits = sum(1 for record in settled_records if bool(record.get("result", {}).get("hit")))
+    hit_rate = hits / settled if settled else 0.0
+    return {"total": total, "settled": settled, "hit_rate": round(hit_rate, 4)}
+
+
 def build_funds_response(page: int = 1, page_size: int = 30, risk_level: str | None = None) -> dict[str, object]:
     try:
         payload = fetch_fund_catalog(page=page, page_size=page_size, risk_level=risk_level)
@@ -166,6 +191,18 @@ class FundInsightHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/v1/health":
             json_response(self, {"status": "ok", "service": "analysis_api", "fund_count": len(FUNDS)})
+            return
+
+        if parsed.path == "/api/v1/predictions":
+            query = parse_qs(parsed.query)
+            try:
+                limit = parse_prediction_limit(query.get("limit", [None])[0])
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            all_records = load_predictions()
+            items = list_predictions(limit=limit)
+            json_response(self, {"items": items, "stats": build_prediction_stats(all_records)})
             return
 
         if parsed.path == "/api/v1/dashboard":
@@ -225,6 +262,18 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/v1/funds/"):
             relative_path = parsed.path.removeprefix("/api/v1/funds/")
+            if relative_path.endswith("/predictions"):
+                fund_id = relative_path.removesuffix("/predictions")
+                query = parse_qs(parsed.query)
+                try:
+                    limit = parse_prediction_limit(query.get("limit", [None])[0])
+                except ValueError as exc:
+                    json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                all_records = load_predictions(fund_id)
+                items = list_predictions(fund_id, limit=limit)
+                json_response(self, {"items": items, "stats": build_prediction_stats(all_records)})
+                return
             if relative_path.endswith("/announcements"):
                 fund_id = relative_path.removesuffix("/announcements")
                 query = parse_qs(parsed.query)
@@ -356,24 +405,29 @@ class FundInsightHandler(BaseHTTPRequestHandler):
         json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/v1/analyze/recommendation":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/analyze/recommendation":
             self._handle_recommendation()
             return
 
-        if self.path == "/api/v1/research/brief":
+        if parsed.path == "/api/v1/research/brief":
             self._handle_research_brief()
             return
 
-        if self.path == "/api/v1/holdings/import":
+        if parsed.path == "/api/v1/holdings/import":
             self._handle_holdings_import()
             return
 
-        if self.path == "/api/v1/holdings/ocr":
+        if parsed.path == "/api/v1/holdings/ocr":
             self._handle_holdings_ocr()
             return
 
-        if self.path == "/api/v1/assistant/ask":
+        if parsed.path == "/api/v1/assistant/ask":
             self._handle_assistant_ask()
+            return
+
+        if parsed.path == "/api/v1/predictions/settle":
+            self._handle_predictions_settle(parsed.query)
             return
 
         json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)
@@ -450,6 +504,44 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             json_response(self, {"message": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         json_response(self, payload)
+
+    def _handle_predictions_settle(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = parse_prediction_limit(query.get("limit", [None])[0])
+        except ValueError as exc:
+            json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        records = load_predictions()
+        checked = 0
+        settled = 0
+        for record in records:
+            if checked >= limit:
+                break
+            if str(record.get("status", "")).lower() != "pending":
+                continue
+            checked += 1
+
+            fund_id = str(record.get("fund_id", "")).strip()
+            created_at = str(record.get("created_at", "")).strip()
+            try:
+                horizon = int(record.get("horizon_trading_days", 5) or 5)
+            except (TypeError, ValueError):
+                horizon = 5
+            direction = str(record.get("direction", "")).lower()
+            result = grade_forecast(fund_id, created_at, horizon, direction=direction)
+            if result is None:
+                continue
+            record["status"] = "settled"
+            record["settled_at"] = datetime.now(ZoneInfo("Asia/Shanghai")).replace(microsecond=0).isoformat()
+            record["result"] = result
+            settled += 1
+
+        still_pending = sum(1 for record in records if str(record.get("status", "")).lower() == "pending")
+        if settled:
+            overwrite_predictions(records)
+        json_response(self, {"checked": checked, "settled": settled, "still_pending": still_pending})
 
     def _read_json(self) -> dict[str, Any] | None:
         content_length = int(self.headers.get("Content-Length", "0"))

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
+from uuid import uuid4
+from zoneinfo import ZoneInfo
+
 from .analytics import build_diagnosis, fund_metrics
+from .forecast_grader import grade_forecast
 from .holdings import HoldingLot, get_holdings
 from .intraday_estimator import estimate_fund_intraday
 from .name_display import normalize_name_display
 from .portfolio import find_fund
+from .predictions_store import append_prediction, compact_to_max
 from .real_data import fetch_fund_announcements, is_real_fund_code
 from .research import NEGATIVE_KEYWORDS, POSITIVE_KEYWORDS
 from .sample_data import FUNDS
@@ -100,6 +106,73 @@ def _build_announcement_evidence(items: list[dict[str, object]]) -> dict[str, st
     return {"label": "最新公告（东财 fundf10）", "value": f"{len(items[:3])} 条", "detail": detail}
 
 
+def _now_iso() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).replace(microsecond=0).isoformat()
+
+
+def _coerce_positive_float(value: object | None) -> float | None:
+    try:
+        parsed = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _persist_forecast_prediction(
+    *,
+    fund_id: str,
+    fund_name: str,
+    forecast: dict[str, object],
+    estimate: dict[str, object],
+    estimate_mode: str,
+    created_at: str | None = None,
+) -> None:
+    created_at_value = created_at or _now_iso()
+    horizon = int(forecast.get("horizon_trading_days", 5) or 5)
+    direction = str(forecast.get("direction", "up")).lower()
+    probability_up = _coerce_positive_float(forecast.get("probability_up", 0.0))
+    if probability_up is None:
+        probability_up = 0.5
+    evidence_refs = forecast.get("evidence_refs", [])
+    if not isinstance(evidence_refs, list):
+        evidence_refs = []
+
+    nav_at_prediction = _coerce_positive_float(estimate.get("estimated_nav"))
+    if nav_at_prediction is None:
+        nav_at_prediction = _coerce_positive_float(estimate.get("latest_nav"))
+
+    basis = {
+        "estimate_as_of": str(estimate.get("estimate_as_of", "")),
+        "estimate_mode": str(estimate.get("estimate_mode", estimate_mode)),
+        "evidence_refs": [str(item) for item in evidence_refs if item is not None],
+    }
+    if nav_at_prediction is not None:
+        basis["nav_at_prediction"] = round(nav_at_prediction, 4)
+
+    record: dict[str, object] = {
+        "id": str(uuid4()),
+        "created_at": created_at_value,
+        "fund_id": fund_id,
+        "fund_name": fund_name,
+        "horizon_trading_days": horizon,
+        "direction": direction,
+        "probability_up": round(float(probability_up), 4),
+        "basis": basis,
+        "status": "pending",
+    }
+
+    result = grade_forecast(fund_id, created_at_value, horizon, direction=direction)
+    if result is not None:
+        record["status"] = "settled"
+        record["settled_at"] = _now_iso()
+        record["result"] = result
+
+    append_prediction(record)
+    compact_to_max(200)
+
+
 def _build_direction_forecast(
     metrics: dict[str, float],
     announcements: list[dict[str, object]],
@@ -189,6 +262,7 @@ def _build_portfolio_answer(
     estimate_mode: str,
 ) -> dict[str, object]:
     candidates: list[dict[str, object]] = []
+    prediction_created_at = _now_iso()
 
     for holding in holdings:
         fund = find_fund(holding.fund_id, FUNDS)
@@ -242,6 +316,14 @@ def _build_portfolio_answer(
             metrics,
             announcement_items,
             ["最新公告（东财 fundf10）", "近 3 期动量", "最大回撤"],
+        )
+        _persist_forecast_prediction(
+            fund_id=fund.fund_id,
+            fund_name=fund.name,
+            forecast=forecast,
+            estimate=estimate,
+            estimate_mode=estimate_mode,
+            created_at=prediction_created_at,
         )
         suggestion = _portfolio_suggestion(
             str(forecast.get("direction", "up")),
@@ -444,10 +526,19 @@ def ask_assistant(
         )
     evidence.append(_build_announcement_evidence(announcement_items))
 
+    prediction_created_at = _now_iso()
     forecast = _build_direction_forecast(
         metrics,
         announcement_items,
         ["最新公告（东财 fundf10）", "近 3 期动量", "最大回撤"],
+    )
+    _persist_forecast_prediction(
+        fund_id=fund.fund_id,
+        fund_name=fund.name,
+        forecast=forecast,
+        estimate=estimate,
+        estimate_mode=estimate_mode,
+        created_at=prediction_created_at,
     )
     direction_label = "上涨" if forecast["direction"] == "up" else "下跌"
     direction_probability = float(forecast["probability_up"])

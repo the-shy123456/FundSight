@@ -7,6 +7,7 @@ import type {
   OcrResponse,
   PortfolioIntraday,
   PortfolioSnapshot,
+  PredictionsResponse,
   TopHoldingsResponse,
 } from "../types";
 import { normalizeFundCode, parseNumber } from "./format";
@@ -65,6 +66,19 @@ export async function requestFundNavTrend(fundId: string, range: "1m" | "3m" | "
 export async function requestFundTopHoldings(fundId: string, limit = 10): Promise<TopHoldingsResponse> {
   return fetchJson<TopHoldingsResponse>(
     `/api/v1/funds/${encodeURIComponent(fundId)}/top-holdings?limit=${encodeURIComponent(limit)}`,
+  );
+}
+
+export async function requestFundPredictions(fundId: string, limit = 50): Promise<PredictionsResponse> {
+  return fetchJson<PredictionsResponse>(
+    `/api/v1/funds/${encodeURIComponent(fundId)}/predictions?limit=${encodeURIComponent(limit)}`,
+  );
+}
+
+export async function requestPredictionsSettle(limit = 50): Promise<{ checked: number; settled: number; still_pending: number }> {
+  return fetchJson<{ checked: number; settled: number; still_pending: number }>(
+    `/api/v1/predictions/settle?limit=${encodeURIComponent(limit)}`,
+    { method: "POST" },
   );
 }
 
