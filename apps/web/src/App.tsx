@@ -1422,22 +1422,32 @@ export default function App() {
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
                   <div className="flex flex-col">
                     <h2 className="text-lg font-bold text-gray-800">持仓明细</h2>
-                    <p className="text-xs text-slate-500 mt-1">{updateStatusWithMode}</p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <button type="button" onClick={openImportModal} className="bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-100 transition-all font-medium inline-flex items-center">
-                      <FolderPlus className="h-4 w-4 mr-1" /> 导入持仓
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={openImportModal}
+                      className="bg-blue-50 text-blue-600 border border-blue-200 px-2.5 py-1 rounded-lg text-xs hover:bg-blue-100 transition-all font-medium inline-flex items-center"
+                    >
+                      <FolderPlus className="h-3.5 w-3.5 mr-1" /> 导入持仓
                     </button>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right text-xs text-slate-500 leading-5">
-                        <div>估值源：{estimateModeLabel}{displayEstimateSourceLabel ? ` · ${displayEstimateSourceLabel}` : ""}</div>
-                        <div>更新时间：{latestEstimateTime ?? "当前"}</div>
-                        {autoFallbackNotice ? <div className="text-amber-600">{autoFallbackNotice}</div> : null}
-                      </div>
-                      <button type="button" onClick={() => void refreshPortfolioData()} className="text-sm text-gray-500 hover:text-gray-800 px-2 py-1.5 inline-flex items-center" disabled={refreshing}>
-                        {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}刷新
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void ask()}
+                      className="bg-purple-50 text-purple-700 border border-purple-200 px-2.5 py-1 rounded-lg text-xs hover:bg-purple-100 transition-all font-medium inline-flex items-center"
+                      disabled={assistantLoading}
+                    >
+                      <Sparkles className="h-3.5 w-3.5 mr-1 text-purple-500" /> AI分析
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void refreshPortfolioData()}
+                      className="text-xs text-gray-600 hover:text-gray-800 px-2 py-1 rounded-lg border border-gray-200 bg-white inline-flex items-center disabled:opacity-60"
+                      disabled={refreshing}
+                      title={updateStatusWithMode}
+                    >
+                      {refreshing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin mr-1" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}刷新
+                    </button>
                   </div>
                 </div>
 
@@ -1471,14 +1481,14 @@ export default function App() {
                             <div className="inline-flex items-center gap-2">
                               <button
                                 type="button"
-                                className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium"
+                                className="text-gray-700 hover:text-gray-900 bg-gray-100 px-2 py-0.5 rounded text-xs font-medium"
                                 onClick={() => openFundDetail(item)}
                               >
                                 详情
                               </button>
                               <button
                                 type="button"
-                                className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium"
+                                className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-0.5 rounded text-xs font-medium"
                                 onClick={() => void ask(buildAnalysisQuestion(item), item.fund_id)}
                               >
                                 AI分析
@@ -1780,14 +1790,14 @@ export default function App() {
                               <div className="inline-flex items-center gap-2">
                                 <button
                                   type="button"
-                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium"
+                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-2 py-0.5 rounded text-xs font-medium"
                                   onClick={() => openFundDetail({ fund_id: item.fund_id })}
                                 >
                                   详情
                                 </button>
                                 <button
                                   type="button"
-                                  className="text-rose-600 hover:text-rose-700 bg-rose-50 px-3 py-1 rounded text-sm font-medium"
+                                  className="text-rose-600 hover:text-rose-700 bg-rose-50 px-2 py-0.5 rounded text-xs font-medium"
                                   onClick={() => void handleRemoveFromWatchlist(item.fund_id, displayName)}
                                 >
                                   移除
