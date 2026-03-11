@@ -208,7 +208,16 @@ function planTypeLabel(planType: PlanType): string {
   return planType === "add_on_dip" ? "回撤加仓" : "止盈计划";
 }
 
-function buildNavPolyline(points: NavTrendPoint[], width = 600, height = 180, padding = 12): string {
+const NAV_CHART_WIDTH = 600;
+const NAV_CHART_HEIGHT = 180;
+const NAV_CHART_PADDING = 12;
+
+function buildNavPolyline(
+  points: NavTrendPoint[],
+  width = NAV_CHART_WIDTH,
+  height = NAV_CHART_HEIGHT,
+  padding = NAV_CHART_PADDING,
+): string {
   if (!points.length) return "";
   const values = points.map((point) => point.nav);
   const min = Math.min(...values);
@@ -224,6 +233,41 @@ function buildNavPolyline(points: NavTrendPoint[], width = 600, height = 180, pa
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
+}
+
+function getNavIndexFromX(
+  x: number,
+  total: number,
+  width = NAV_CHART_WIDTH,
+  padding = NAV_CHART_PADDING,
+): number | null {
+  if (total <= 0) return null;
+  if (total === 1) return 0;
+  const usableWidth = width - padding * 2;
+  if (usableWidth <= 0) return 0;
+  const clamped = Math.min(Math.max(x, padding), padding + usableWidth);
+  const ratio = (clamped - padding) / usableWidth;
+  return Math.min(total - 1, Math.max(0, Math.round(ratio * (total - 1))));
+}
+
+function getNavPointPosition(
+  points: NavTrendPoint[],
+  index: number,
+  min: number,
+  max: number,
+  width = NAV_CHART_WIDTH,
+  height = NAV_CHART_HEIGHT,
+  padding = NAV_CHART_PADDING,
+): { x: number; y: number } | null {
+  const point = points[index];
+  if (!point) return null;
+  const span = max - min || 1;
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const ratio = points.length > 1 ? index / (points.length - 1) : 0.5;
+  const x = padding + ratio * usableWidth;
+  const y = padding + (1 - (point.nav - min) / span) * usableHeight;
+  return { x, y };
 }
 
 function computeIntervalReturn(points: NavTrendPoint[]): number | null {
@@ -501,6 +545,7 @@ export default function App() {
   const [detailFundId, setDetailFundId] = useState("");
   const [detailRange, setDetailRange] = useState<NavRange>("6m");
   const [detailNavTrend, setDetailNavTrend] = useState<NavTrendResponse | null>(null);
+  const [navHoverIndex, setNavHoverIndex] = useState<number | null>(null);
   const [detailHoldings, setDetailHoldings] = useState<TopHoldingsResponse | null>(null);
   const [detailPredictions, setDetailPredictions] = useState<PredictionsResponse | null>(null);
   const [detailEstimate, setDetailEstimate] = useState<IntradayEstimate | null>(null);
@@ -564,15 +609,30 @@ export default function App() {
   const navPolyline = useMemo(() => buildNavPolyline(navPoints), [navPoints]);
   const navSummary = useMemo(() => {
     if (!navPoints.length) {
-      return { min: 0, max: 0, latest: 0 };
+      return { min: 0, max: 0, latest: 0, span: 1 };
     }
     const values = navPoints.map((point) => point.nav);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
     return {
-      min: Math.min(...values),
-      max: Math.max(...values),
+      min,
+      max,
       latest: values[values.length - 1],
+      span: max - min || 1,
     };
   }, [navPoints]);
+  const navHoverPoint = useMemo(() => {
+    if (navHoverIndex === null || !navPoints.length) return null;
+    const index = Math.min(Math.max(navHoverIndex, 0), navPoints.length - 1);
+    const point = navPoints[index];
+    if (!point) return null;
+    const position = getNavPointPosition(navPoints, index, navSummary.min, navSummary.max);
+    if (!position) return null;
+    return { index, point, ...position };
+  }, [navHoverIndex, navPoints, navSummary.min, navSummary.max]);
+  const navHoverLabel = navHoverPoint
+    ? `${navHoverPoint.point.date || "--"} 净值 ${navHoverPoint.point.nav.toFixed(4)}`
+    : "移动鼠标或触摸查看单点净值";
   const intervalReturns = detailIntervalReturns ?? {
     "1m": null,
     "3m": null,
@@ -618,6 +678,14 @@ export default function App() {
     }
     return fragments.join("，") || "披露与穿透信息存在滞后或覆盖不足";
   }, [detailEstimate, detailFund?.holdings_disclosure_date, detailHoldings?.disclosure_date]);
+
+  useEffect(() => {
+    if (!navPoints.length) {
+      setNavHoverIndex(null);
+      return;
+    }
+    setNavHoverIndex((current) => (current === null ? null : Math.min(current, navPoints.length - 1)));
+  }, [navPoints]);
 
   useEffect(() => {
     saveManualRows(manualRows);
@@ -683,6 +751,20 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  const handleNavPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (!navPoints.length) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width) return;
+    const x = ((event.clientX - rect.left) / rect.width) * NAV_CHART_WIDTH;
+    const index = getNavIndexFromX(x, navPoints.length);
+    if (index === null) return;
+    setNavHoverIndex(index);
+  };
+
+  const handleNavPointerLeave = () => {
+    setNavHoverIndex(null);
+  };
 
   async function syncRows(rows: ManualRow[], successMessage: string, showNotice = true) {
     const validRows = rows.filter(isValidManualRow);
@@ -1552,7 +1634,14 @@ export default function App() {
                   {detailNavLoading ? (
                     <div className="text-xs text-gray-500 flex items-center"><LoaderCircle className="h-4 w-4 mr-2 animate-spin text-blue-500" />净值曲线加载中...</div>
                   ) : navPoints.length ? (
-                    <svg viewBox="0 0 600 180" className="w-full h-44">
+                    <svg
+                      viewBox={`0 0 ${NAV_CHART_WIDTH} ${NAV_CHART_HEIGHT}`}
+                      className="w-full h-44"
+                      onPointerMove={handleNavPointerMove}
+                      onPointerDown={handleNavPointerMove}
+                      onPointerLeave={handleNavPointerLeave}
+                      style={{ touchAction: "none" }}
+                    >
                       <polyline
                         fill="none"
                         stroke="rgb(37 99 235)"
@@ -1561,11 +1650,34 @@ export default function App() {
                         strokeLinecap="round"
                         points={navPolyline}
                       />
+                      {navHoverPoint ? (
+                        <>
+                          <line
+                            x1={navHoverPoint.x}
+                            x2={navHoverPoint.x}
+                            y1={NAV_CHART_PADDING}
+                            y2={NAV_CHART_HEIGHT - NAV_CHART_PADDING}
+                            stroke="rgba(37, 99, 235, 0.35)"
+                            strokeWidth="1.5"
+                          />
+                          <circle
+                            cx={navHoverPoint.x}
+                            cy={navHoverPoint.y}
+                            r="4"
+                            fill="white"
+                            stroke="rgb(37 99 235)"
+                            strokeWidth="2"
+                          />
+                        </>
+                      ) : null}
                     </svg>
                   ) : (
                     <div className="text-xs text-gray-500">暂无净值曲线数据。</div>
                   )}
                 </div>
+                {navPoints.length ? (
+                  <div className="mt-2 text-xs text-slate-600">{navHoverLabel}</div>
+                ) : null}
                 <div className="mt-2 text-xs text-gray-500 flex items-center justify-between">
                   <span>最低 {navSummary.min ? navSummary.min.toFixed(4) : "--"}</span>
                   <span>最高 {navSummary.max ? navSummary.max.toFixed(4) : "--"}</span>
