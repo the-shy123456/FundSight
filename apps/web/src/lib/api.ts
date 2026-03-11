@@ -8,6 +8,8 @@ import type {
   OcrResponse,
   PortfolioIntraday,
   PortfolioSnapshot,
+  FundPlan,
+  PlansResponse,
   PredictionsResponse,
   TopHoldingsResponse,
 } from "../types";
@@ -74,6 +76,23 @@ export async function requestFundPredictions(fundId: string, limit = 50): Promis
   return fetchJson<PredictionsResponse>(
     `/api/v1/funds/${encodeURIComponent(fundId)}/predictions?limit=${encodeURIComponent(limit)}`,
   );
+}
+
+export async function requestPlans(fundId?: string): Promise<FundPlan[]> {
+  const query = fundId ? `?fund_id=${encodeURIComponent(fundId)}` : "";
+  const payload = await fetchJson<PlansResponse>(`/api/v1/plans${query}`);
+  return payload.items ?? [];
+}
+
+export async function createPlan(plan: Omit<FundPlan, "id" | "created_at"> & { id?: string; created_at?: string }): Promise<FundPlan> {
+  return fetchJson<FundPlan>("/api/v1/plans", {
+    method: "POST",
+    body: JSON.stringify(plan),
+  });
+}
+
+export async function deletePlan(planId: string): Promise<{ deleted?: boolean }> {
+  return fetchJson<{ deleted?: boolean }>(`/api/v1/plans/${encodeURIComponent(planId)}`, { method: "DELETE" });
 }
 
 export async function requestPredictionsSettle(limit = 50): Promise<{ checked: number; settled: number; still_pending: number }> {

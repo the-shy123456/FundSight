@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 from .analytics import build_dashboard_snapshot, build_diagnosis, build_fund_snapshot, recommend_portfolio
 from .assistant import ask_assistant
@@ -19,6 +20,7 @@ from .models import InvestorProfile
 from .name_display import attach_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
+from .plans_store import append_plan, delete_plan, list_plans
 from .predictions_store import list_predictions, load_predictions, overwrite_predictions
 from .research import build_research_brief
 from .real_data import (
@@ -184,6 +186,51 @@ def parse_holdings_request(data: dict[str, Any], *, persist: bool) -> tuple[obje
     return source, holdings
 
 
+def parse_plan_payload(data: dict[str, Any]) -> dict[str, Any]:
+    fund_id = str(data.get("fund_id", "")).strip()
+    if not fund_id:
+        raise ValueError("fund_id 不能为空")
+
+    plan_type = str(data.get("plan_type", "")).strip()
+    if plan_type not in {"take_profit", "add_on_dip"}:
+        raise ValueError("plan_type 仅支持 take_profit 或 add_on_dip")
+
+    raw_steps = data.get("steps", [])
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise ValueError("steps 必须是非空数组")
+
+    steps: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(raw_steps, start=1):
+        if not isinstance(raw_step, dict):
+            raise ValueError(f"第 {index} 条 step 格式错误")
+        try:
+            trigger_pct = float(raw_step.get("trigger_pct", 0))
+            action_pct = float(raw_step.get("action_pct", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"第 {index} 条 step 数值格式错误") from exc
+        note = str(raw_step.get("note", "") or "")
+        steps.append(
+            {
+                "trigger_pct": round(trigger_pct, 4),
+                "action_pct": round(action_pct, 4),
+                "note": note,
+            }
+        )
+
+    created_at = str(data.get("created_at", "")).strip()
+    if not created_at:
+        created_at = datetime.now(ZoneInfo("Asia/Shanghai")).replace(microsecond=0).isoformat()
+
+    plan_id = str(data.get("id", "")).strip() or str(uuid4())
+    return {
+        "id": plan_id,
+        "fund_id": fund_id,
+        "plan_type": plan_type,
+        "steps": steps,
+        "created_at": created_at,
+    }
+
+
 class FundInsightHandler(BaseHTTPRequestHandler):
     server_version = "FundInsightHub/0.3"
 
@@ -203,6 +250,13 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             all_records = load_predictions()
             items = list_predictions(limit=limit)
             json_response(self, {"items": items, "stats": build_prediction_stats(all_records)})
+            return
+
+        if parsed.path == "/api/v1/plans":
+            query = parse_qs(parsed.query)
+            fund_id = query.get("fund_id", [None])[0]
+            items = list_plans(fund_id=str(fund_id) if fund_id else None)
+            json_response(self, {"items": items})
             return
 
         if parsed.path == "/api/v1/dashboard":
@@ -426,8 +480,36 @@ class FundInsightHandler(BaseHTTPRequestHandler):
             self._handle_assistant_ask()
             return
 
+        if parsed.path == "/api/v1/plans":
+            data = self._read_json()
+            if data is None:
+                return
+            try:
+                record = parse_plan_payload(data)
+                append_plan(record)
+            except ValueError as exc:
+                json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            json_response(self, record, HTTPStatus.CREATED)
+            return
+
         if parsed.path == "/api/v1/predictions/settle":
             self._handle_predictions_settle(parsed.query)
+            return
+
+        json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/v1/plans/"):
+            plan_id = parsed.path.removeprefix("/api/v1/plans/").strip()
+            if not plan_id:
+                json_response(self, {"message": "plan_id 不能为空"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not delete_plan(plan_id):
+                json_response(self, {"message": "计划不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            json_response(self, {"deleted": True})
             return
 
         json_response(self, {"message": "资源不存在"}, HTTPStatus.NOT_FOUND)

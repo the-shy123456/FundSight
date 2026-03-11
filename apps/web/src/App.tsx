@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import {
   buildImportTextFromRows,
+  createPlan,
+  deletePlan,
   requestIntradayEstimate,
   requestAssistant,
   requestFundSearch,
@@ -24,6 +26,7 @@ import {
   requestFundsCatalog,
   requestHoldingsImport,
   requestHoldingsOcr,
+  requestPlans,
   requestPortfolio,
   requestPortfolioIntraday,
   requestPredictionsSettle,
@@ -54,7 +57,10 @@ import type {
   AnnouncementItem,
   AssistantResponse,
   FundCatalogItem,
+  FundPlan,
   ImportTab,
+  PlanStep,
+  PlanType,
   ManualRow,
   IntradayEstimate,
   NavTrendPoint,
@@ -88,6 +94,12 @@ type ConfigFormState = {
   name: string;
   endpoint: string;
   apiKey: string;
+};
+
+type PlanDraft = {
+  fund_id: string;
+  plan_type: PlanType;
+  steps: PlanStep[];
 };
 
 type EstimateMode = "auto" | "official" | "penetration";
@@ -190,6 +202,10 @@ function formatPredictionDirection(record: PredictionRecord): string {
   const probability = direction === "up" ? probabilityUp : 1 - probabilityUp;
   const label = direction === "up" ? "上涨" : "下跌";
   return `${label} ${Math.round(probability * 100)}%`;
+}
+
+function planTypeLabel(planType: PlanType): string {
+  return planType === "add_on_dip" ? "回撤加仓" : "止盈计划";
 }
 
 function buildNavPolyline(points: NavTrendPoint[], width = 600, height = 180, padding = 12): string {
@@ -490,6 +506,11 @@ export default function App() {
   const [detailEstimate, setDetailEstimate] = useState<IntradayEstimate | null>(null);
   const [detailIntervalReturns, setDetailIntervalReturns] = useState<Record<NavRange, number | null> | null>(null);
   const [detailIntervalLoading, setDetailIntervalLoading] = useState(false);
+  const [detailPlans, setDetailPlans] = useState<FundPlan[]>([]);
+  const [detailPlansLoading, setDetailPlansLoading] = useState(false);
+  const [detailPlansNotice, setDetailPlansNotice] = useState("");
+  const [planDraft, setPlanDraft] = useState<PlanDraft | null>(null);
+  const [planSaving, setPlanSaving] = useState(false);
   const [detailNavLoading, setDetailNavLoading] = useState(false);
   const [detailHoldingsLoading, setDetailHoldingsLoading] = useState(false);
   const [detailPredictionsLoading, setDetailPredictionsLoading] = useState(false);
@@ -516,6 +537,7 @@ export default function App() {
   const predictionsRequestIdRef = useRef(0);
   const intervalReturnsRequestIdRef = useRef(0);
   const themeRequestIdRef = useRef(0);
+  const plansRequestIdRef = useRef(0);
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
@@ -902,6 +924,65 @@ export default function App() {
     }
   }
 
+  async function loadPlans(fundId: string) {
+    if (!fundId) return;
+    const requestId = plansRequestIdRef.current + 1;
+    plansRequestIdRef.current = requestId;
+    setDetailPlansLoading(true);
+    setDetailPlansNotice("");
+    try {
+      const items = await requestPlans(fundId);
+      if (plansRequestIdRef.current !== requestId) return;
+      setDetailPlans(items);
+    } catch (error) {
+      if (plansRequestIdRef.current !== requestId) return;
+      setDetailPlans([]);
+      setDetailPlansNotice(error instanceof Error ? error.message : "计划加载失败。");
+    } finally {
+      if (plansRequestIdRef.current === requestId) {
+        setDetailPlansLoading(false);
+      }
+    }
+  }
+
+  function buildDefaultPlanDraft(fundId: string): PlanDraft {
+    return {
+      fund_id: fundId,
+      plan_type: "take_profit",
+      steps: [
+        { trigger_pct: 0.03, action_pct: 0.2, note: "触发首段止盈" },
+        { trigger_pct: 0.06, action_pct: 0.3, note: "分批锁定收益" },
+        { trigger_pct: 0.1, action_pct: 0.5, note: "完成止盈计划" },
+      ],
+    };
+  }
+
+  async function savePlanDraft() {
+    if (!planDraft) return;
+    setPlanSaving(true);
+    setDetailPlansNotice("");
+    try {
+      await createPlan(planDraft);
+      setPlanDraft(null);
+      await loadPlans(planDraft.fund_id);
+    } catch (error) {
+      setDetailPlansNotice(error instanceof Error ? error.message : "计划保存失败。");
+    } finally {
+      setPlanSaving(false);
+    }
+  }
+
+  async function removePlan(planId: string, fundId: string) {
+    if (!planId) return;
+    setDetailPlansNotice("");
+    try {
+      await deletePlan(planId);
+      await loadPlans(fundId);
+    } catch (error) {
+      setDetailPlansNotice(error instanceof Error ? error.message : "计划删除失败。");
+    }
+  }
+
   async function settlePredictions() {
     if (!detailFundId) return;
     setDetailPredictionsSettling(true);
@@ -926,6 +1007,9 @@ export default function App() {
     setDetailPredictions(null);
     setDetailEstimate(null);
     setDetailIntervalReturns(null);
+    setDetailPlans([]);
+    setPlanDraft(null);
+    setDetailPlansNotice("");
     setDetailNotice("");
     setDetailPredictionsNotice("");
     void loadNavTrend(item.fund_id, "6m");
@@ -933,6 +1017,7 @@ export default function App() {
     void loadTopHoldings(item.fund_id);
     void loadFundEstimate(item.fund_id);
     void loadFundPredictions(item.fund_id, 50);
+    void loadPlans(item.fund_id);
   }
 
   function closeFundDetail() {
@@ -1570,6 +1655,88 @@ export default function App() {
                   >
                     查看同板块基金
                   </button>
+                </div>
+              </section>
+
+              <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-800">执行计划</h4>
+                    <p className="text-xs text-gray-500 mt-1">保存该基金的止盈或回撤加仓计划。</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-purple-200 text-purple-600 bg-purple-50 hover:bg-purple-100 disabled:opacity-50"
+                    disabled={!detailFundId}
+                    onClick={() => setPlanDraft(buildDefaultPlanDraft(detailFundId))}
+                  >
+                    生成计划
+                  </button>
+                </div>
+
+                {detailPlansNotice ? (
+                  <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{detailPlansNotice}</div>
+                ) : null}
+
+                {planDraft ? (
+                  <div className="mt-3 rounded-lg border border-purple-100 bg-purple-50/40 p-3 text-xs text-purple-700">
+                    <div className="font-semibold text-purple-800">默认三步止盈计划</div>
+                    <div className="mt-2 space-y-1 text-purple-700">
+                      {planDraft.steps.map((step, index) => (
+                        <div key={`${planDraft.fund_id}-draft-${index}`}>
+                          触发 {formatSignedPercent(step.trigger_pct)} · 动作 {Math.round(step.action_pct * 100)}%{step.note ? ` · ${step.note}` : ""}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void savePlanDraft()}
+                        disabled={planSaving}
+                        className="px-3 py-1.5 rounded-md bg-purple-600 text-white text-xs font-semibold disabled:opacity-60"
+                      >
+                        {planSaving ? "保存中..." : "保存计划"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPlanDraft(null)}
+                        className="px-3 py-1.5 rounded-md border border-purple-200 text-purple-600 text-xs font-medium hover:bg-purple-50"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-3 space-y-2">
+                  {detailPlansLoading ? (
+                    <div className="text-xs text-gray-500">计划加载中...</div>
+                  ) : detailPlans.length ? (
+                    detailPlans.map((plan) => (
+                      <div key={plan.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-800">{planTypeLabel(plan.plan_type)}</span>
+                          <button
+                            type="button"
+                            onClick={() => void removePlan(plan.id, plan.fund_id)}
+                            className="text-rose-600 hover:text-rose-700"
+                          >
+                            删除
+                          </button>
+                        </div>
+                        <div className="mt-2 space-y-1">
+                          {plan.steps.map((step, index) => (
+                            <div key={`${plan.id}-${index}`}>
+                              触发 {formatSignedPercent(step.trigger_pct)} · 动作 {Math.round(step.action_pct * 100)}%{step.note ? ` · ${step.note}` : ""}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-2 text-[11px] text-slate-400">创建时间 {formatPredictionTime(plan.created_at)}</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-gray-500">暂无计划，可点击右上角生成。</div>
+                  )}
                 </div>
               </section>
 

@@ -224,6 +224,26 @@ export interface PredictionsResponse {
   stats: PredictionStats;
 }
 
+export type PlanType = "take_profit" | "add_on_dip";
+
+export interface PlanStep {
+  trigger_pct: number;
+  action_pct: number;
+  note?: string;
+}
+
+export interface FundPlan {
+  id: string;
+  fund_id: string;
+  plan_type: PlanType;
+  steps: PlanStep[];
+  created_at: string;
+}
+
+export interface PlansResponse {
+  items: FundPlan[];
+}
+
 export interface AssistantHolding {
   current_value?: number;
   total_pnl?: number;
