@@ -14,7 +14,9 @@ import {
   X,
 } from "lucide-react";
 import {
+  addToWatchlist,
   buildImportTextFromRows,
+  removeFromWatchlist,
   requestIntradayEstimate,
   requestAssistant,
   requestFundSearch,
@@ -25,6 +27,8 @@ import {
   requestHoldingsOcr,
   requestPortfolio,
   requestPortfolioIntraday,
+  requestWatchlist,
+  requestWatchlistIntraday,
 } from "./lib/api";
 import {
   formatCurrency,
@@ -62,6 +66,8 @@ import type {
   PortfolioSnapshot,
   TopHoldingsResponse,
   ViewTab,
+  WatchlistIntradayItem,
+  WatchlistItem,
 } from "./types";
 
 type ChatMessage = {
@@ -88,6 +94,13 @@ type ConfigFormState = {
 
 type EstimateMode = "auto" | "official" | "penetration";
 type NavRange = "1m" | "3m" | "6m" | "1y" | "all";
+type DetailFundInfo = {
+  fund_id: string;
+  name?: string;
+  name_display?: string;
+  theme?: string;
+  holdings_disclosure_date?: string;
+};
 
 function createManualEntry(): ManualEntry {
   return { query: "", fundName: "", amount: "", profit: "" };
@@ -585,6 +598,11 @@ export default function App() {
   const [catalogPageSize, setCatalogPageSize] = useState(10);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>([]);
+  const [watchlistIntraday, setWatchlistIntraday] = useState<WatchlistIntradayItem[]>([]);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
+  const [watchlistLoaded, setWatchlistLoaded] = useState(false);
+  const [watchlistNotice, setWatchlistNotice] = useState("");
   const [question, setQuestion] = useState(restoreAssistantQuestion());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantLoading, setAssistantLoading] = useState(false);
@@ -624,6 +642,16 @@ export default function App() {
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
   const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
+  const watchlistIdSet = useMemo(() => new Set(watchlistItems.map((item) => item.fund_id)), [watchlistItems]);
+  const watchlistIntradayMap = useMemo(() => {
+    const map = new Map<string, WatchlistIntradayItem>();
+    watchlistIntraday.forEach((item) => {
+      if (item.fund_id) {
+        map.set(item.fund_id, item);
+      }
+    });
+    return map;
+  }, [watchlistIntraday]);
   const latestEstimateTime = extractTimeHHMM(dataQuality?.latest_estimate_as_of);
   const estimateModeLabel = ESTIMATE_MODE_LABELS[estimateMode];
   const displayEstimateSourceLabel = (dataQuality?.display_estimate_source_label || "").trim();
@@ -634,10 +662,13 @@ export default function App() {
   const updateStatusWithMode = `${updateStatusText}｜估值源：${estimateModeLabel}`;
   const activeConfig = useMemo(() => aiConfigs.find((item) => item.active) || aiConfigs[0] || null, [aiConfigs]);
   const topContribution = intraday?.contributions?.[0];
-  const detailFund = useMemo(
-    () => positions.find((item) => item.fund_id === detailFundId) || null,
-    [positions, detailFundId],
-  );
+  const detailFund = useMemo<DetailFundInfo | null>(() => {
+    const fromPositions = positions.find((item) => item.fund_id === detailFundId);
+    if (fromPositions) return fromPositions;
+    const fromWatchlist = watchlistItems.find((item) => item.fund_id === detailFundId);
+    return fromWatchlist ?? null;
+  }, [positions, watchlistItems, detailFundId]);
+  const detailInWatchlist = detailFundId ? watchlistIdSet.has(detailFundId) : false;
   const detailHoldingsSorted = useMemo(() => {
     const items = detailHoldings?.items ?? [];
     return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
@@ -780,6 +811,11 @@ export default function App() {
   }, [activeTab, catalogLoaded, catalogPageSize]);
 
   useEffect(() => {
+    if (activeTab !== "watchlist") return;
+    void loadWatchlist();
+  }, [activeTab, estimateMode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function bootstrap() {
@@ -881,6 +917,70 @@ export default function App() {
       setPageNotice(error instanceof Error ? error.message : "基金库加载失败。");
     } finally {
       setCatalogLoading(false);
+    }
+  }
+
+  function notifyWatchlist(message: string) {
+    if (importOpen) {
+      setModalNotice(message);
+      return;
+    }
+    if (detailOpen) {
+      setDetailNotice(message);
+      return;
+    }
+    if (activeTab === "watchlist") {
+      setWatchlistNotice(message);
+      return;
+    }
+    setPageNotice(message);
+  }
+
+  async function loadWatchlist(showNotice = false) {
+    setWatchlistLoading(true);
+    setWatchlistNotice(showNotice ? "正在刷新自选..." : "");
+    try {
+      const [listPayload, intradayPayload] = await Promise.all([
+        requestWatchlist(),
+        requestWatchlistIntraday(estimateMode).catch(() => null),
+      ]);
+      setWatchlistItems(listPayload.items ?? []);
+      setWatchlistIntraday(intradayPayload?.items ?? []);
+      setWatchlistLoaded(true);
+      if (showNotice) setWatchlistNotice("自选已更新。");
+    } catch (error) {
+      setWatchlistItems([]);
+      setWatchlistIntraday([]);
+      setWatchlistNotice(error instanceof Error ? error.message : "自选加载失败。");
+    } finally {
+      setWatchlistLoading(false);
+    }
+  }
+
+  async function handleAddToWatchlist(item: { fund_id: string; name?: string; name_display?: string }) {
+    const fundId = item.fund_id;
+    if (!fundId) {
+      notifyWatchlist("基金代码无效，无法加入自选。");
+      return;
+    }
+    try {
+      await addToWatchlist(fundId);
+      const displayName = resolveFundName(item.name, item.name_display) || fundId;
+      notifyWatchlist(`已加入自选：${displayName}。`);
+      await loadWatchlist();
+    } catch (error) {
+      notifyWatchlist(error instanceof Error ? error.message : "加入自选失败，请稍后重试。");
+    }
+  }
+
+  async function handleRemoveFromWatchlist(fundId: string, displayName?: string) {
+    if (!fundId) return;
+    try {
+      await removeFromWatchlist(fundId);
+      notifyWatchlist(`${displayName || fundId} 已从自选移除。`);
+      await loadWatchlist();
+    } catch (error) {
+      notifyWatchlist(error instanceof Error ? error.message : "移除自选失败，请稍后重试。");
     }
   }
 
@@ -1037,7 +1137,7 @@ export default function App() {
     }
   }
 
-  function openFundDetail(item: PortfolioPosition) {
+  function openFundDetail(item: { fund_id: string }) {
     setDetailOpen(true);
     setDetailFundId(item.fund_id);
     setDetailRange("6m");
@@ -1226,7 +1326,7 @@ export default function App() {
                 <LineChart className="h-5 w-5 mr-2" /> AI-Fund Matrix
               </div>
               <div className="ml-10 flex space-x-8">
-                {[["portfolio", "我的持仓"], ["library", "基金库"], ["config", "模型配置"]].map(([tab, label]) => (
+                {[["portfolio", "持仓"], ["watchlist", "自选"], ["library", "基金库"], ["config", "模型配置"]].map(([tab, label]) => (
                   <button
                     key={tab}
                     type="button"
@@ -1468,7 +1568,17 @@ export default function App() {
                             <td className="px-6 py-4 text-sm text-gray-600">{item.risk_level || "--"}</td>
                             <td className="px-6 py-4 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
                             <td className="px-6 py-4 text-center">
-                              <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium">加入持仓</button>
+                              <div className="inline-flex items-center gap-2">
+                                <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium">加入持仓</button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleAddToWatchlist(item)}
+                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium disabled:opacity-60"
+                                  disabled={watchlistIdSet.has(item.fund_id)}
+                                >
+                                  {watchlistIdSet.has(item.fund_id) ? "已自选" : "加入自选"}
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1485,6 +1595,93 @@ export default function App() {
                 </div>
               ) : (
                 <div className="h-full flex items-center justify-center text-gray-400 text-sm">{catalogLoading ? "基金库加载中..." : "基金库数据模块"}</div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "watchlist" ? (
+          <div className="h-full flex flex-col">
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">自选</h2>
+                <p className="text-xs text-gray-500 mt-1">最多 50 只基金 · 估值源：{estimateModeLabel}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadWatchlist(true)}
+                className="text-sm text-gray-600 hover:text-gray-800 bg-gray-100 px-3 py-2 rounded-lg inline-flex items-center"
+                disabled={watchlistLoading}
+              >
+                {watchlistLoading ? <LoaderCircle className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}刷新
+              </button>
+            </div>
+
+            {watchlistNotice ? <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">{watchlistNotice}</div> : null}
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex-1 overflow-hidden">
+              {watchlistItems.length ? (
+                <div className="overflow-auto h-full">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">基金</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">估值源</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">估值涨跌</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">最新净值</th>
+                        <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {watchlistItems.map((item) => {
+                        const intradayItem = watchlistIntradayMap.get(item.fund_id);
+                        const estimatedReturn = intradayItem?.estimated_return;
+                        const latestNav = intradayItem?.latest_nav;
+                        const displayName = resolveFundName(item.name, item.name_display) || item.name || item.fund_id;
+                        return (
+                          <tr key={item.fund_id}>
+                            <td className="px-6 py-4">
+                              <div className="text-sm font-medium text-gray-900">{displayName}</div>
+                              <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
+                              {item.theme ? (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] border border-blue-200 text-blue-700 bg-blue-50">{item.theme}</span>
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-600">{estimateModeLabel}</td>
+                            <td className={`px-6 py-4 text-right text-sm font-semibold ${toneClass(estimatedReturn)}`}>
+                              {typeof estimatedReturn === "number" ? formatSignedPercent(estimatedReturn) : "--"}
+                            </td>
+                            <td className="px-6 py-4 text-right text-sm text-gray-700">{latestNav ? Number(latestNav).toFixed(4) : "--"}</td>
+                            <td className="px-6 py-4 text-center">
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium"
+                                  onClick={() => openFundDetail({ fund_id: item.fund_id })}
+                                >
+                                  详情
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-rose-600 hover:text-rose-700 bg-rose-50 px-3 py-1 rounded text-sm font-medium"
+                                  onClick={() => void handleRemoveFromWatchlist(item.fund_id, displayName)}
+                                >
+                                  移除
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+                  {watchlistLoading ? "自选加载中..." : "暂无自选基金，去基金库或搜索结果里加入吧。"}
+                </div>
               )}
             </div>
           </div>
@@ -1552,9 +1749,25 @@ export default function App() {
                   </h3>
                   <p className="text-xs text-gray-500 mt-1">收益率曲线覆盖从成立到现在，可切换不同区间。</p>
                 </div>
-                <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700">
-                  <X className="h-5 w-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const displayName = resolveFundName(detailFund?.name, detailFund?.name_display) || detailFundId;
+                      if (detailInWatchlist) {
+                        void handleRemoveFromWatchlist(detailFundId, displayName);
+                      } else {
+                        void handleAddToWatchlist({ fund_id: detailFundId, name: detailFund?.name, name_display: detailFund?.name_display });
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${detailInWatchlist ? "bg-gray-100 text-gray-700 border-gray-200" : "bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"}`}
+                  >
+                    {detailInWatchlist ? "移除自选" : "加入自选"}
+                  </button>
+                  <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
               {detailNotice ? <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{detailNotice}</div> : null}
             </div>
@@ -1803,7 +2016,17 @@ export default function App() {
                           <td className="px-3 py-2 text-sm text-gray-600">{item.risk_level || "--"}</td>
                           <td className="px-3 py-2 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
                           <td className="px-3 py-2 text-center">
-                            <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded text-xs font-medium">加入持仓</button>
+                            <div className="inline-flex items-center gap-2">
+                              <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded text-xs font-medium">加入持仓</button>
+                              <button
+                                type="button"
+                                onClick={() => void handleAddToWatchlist(item)}
+                                className="text-gray-700 hover:text-gray-900 bg-gray-100 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-60"
+                                disabled={watchlistIdSet.has(item.fund_id)}
+                              >
+                                {watchlistIdSet.has(item.fund_id) ? "已自选" : "加入自选"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
