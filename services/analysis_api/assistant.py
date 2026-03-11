@@ -84,6 +84,21 @@ def _count_keyword_hits(texts: list[str], keywords: tuple[str, ...]) -> int:
     return sum(lowered.count(keyword.lower()) for keyword in keywords)
 
 
+def _normalize_announcements(items: list[dict[str, object]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in items:
+        normalized.append(
+            {
+                "date": str(item.get("date") or ""),
+                "title": str(item.get("title") or ""),
+                "type": str(item.get("type") or ""),
+                "url": str(item.get("url") or ""),
+                "pdf_url": str(item.get("pdf_url") or ""),
+            }
+        )
+    return normalized
+
+
 def _build_announcement_evidence(items: list[dict[str, object]]) -> dict[str, str]:
     if not items:
         return {
@@ -96,11 +111,8 @@ def _build_announcement_evidence(items: list[dict[str, object]]) -> dict[str, st
     for item in items[:3]:
         title = str(item.get("title") or "未命名公告")
         date = str(item.get("date") or "未知日期")
-        url = str(item.get("url") or "")
-        pdf_url = str(item.get("pdf_url") or "")
-        suffix = ""
-        if url or pdf_url:
-            suffix = f" (url: {url or '无'}; pdf: {pdf_url or '无'})"
+        announcement_type = str(item.get("type") or "")
+        suffix = f"（{announcement_type}）" if announcement_type else ""
         lines.append(f"{date} {title}{suffix}")
     detail = "；".join(lines) + "。来源：东财 fundf10。"
     return {"label": "最新公告（东财 fundf10）", "value": f"{len(items[:3])} 条", "detail": detail}
@@ -284,6 +296,7 @@ def _build_portfolio_answer(
                 announcement_items = list(announcements_payload.get("items") or [])[:3]
             except Exception:
                 announcement_items = []
+        announcement_structured = _normalize_announcements(announcement_items)
 
         evidence = [
             {
@@ -345,6 +358,7 @@ def _build_portfolio_answer(
                 "suggestion": suggestion,
                 "evidence": evidence,
                 "announcement_evidence": _build_announcement_evidence(announcement_items),
+                "announcements": announcement_structured,
             }
         )
 
@@ -433,6 +447,7 @@ def ask_assistant(
             announcement_items = list(announcements_payload.get("items") or [])[:3]
         except Exception:
             announcement_items = []
+    announcement_structured = _normalize_announcements(announcement_items)
 
     wants_to_sell = any(keyword in clean_question for keyword in ("卖", "止盈", "清仓", "落袋"))
     wants_to_buy_back = any(keyword in clean_question for keyword in ("跌", "回落", "再买", "接回", "补仓"))
@@ -593,6 +608,7 @@ def ask_assistant(
         "actions": actions,
         "forecast": forecast,
         "risks": risks,
+        "announcements": announcement_structured,
         "confidence": {
             "score": estimate["confidence"]["score"],
             "label": estimate["confidence"]["label"],

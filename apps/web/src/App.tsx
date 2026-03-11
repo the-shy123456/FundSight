@@ -50,6 +50,7 @@ import {
 } from "./lib/storage";
 import type {
   AiConfig,
+  AnnouncementItem,
   AssistantResponse,
   FundCatalogItem,
   ImportTab,
@@ -69,6 +70,8 @@ type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
+  announcements?: AnnouncementItem[];
+  perFundAnnouncements?: Array<{ fund_id: string; name: string; items: AnnouncementItem[] }>;
 };
 
 type ManualEntry = {
@@ -120,6 +123,8 @@ const PORTFOLIO_QUESTION_KEYWORDS = [
   "我的基金",
   "仓位",
 ];
+
+const ANNOUNCEMENT_EVIDENCE_LABEL = "最新公告（东财 fundf10）";
 
 function isPortfolioQuestion(text: string): boolean {
   const clean = text.trim();
@@ -300,6 +305,67 @@ function assistantText(payload: AssistantResponse): string {
   }
 
   return lines.join("\n");
+}
+
+function AnnouncementCard({ title, items }: { title: string; items: AnnouncementItem[] }) {
+  const countLabel = items.length ? `${items.length} 条` : "暂无";
+  return (
+    <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+      <summary className="cursor-pointer text-xs font-semibold text-slate-600">{title} · {countLabel}</summary>
+      <div className="mt-3 space-y-2">
+        {items.length ? (
+          items.map((item, index) => {
+            const titleText = item.title?.trim() || "未命名公告";
+            const dateText = item.date?.trim() || "未知日期";
+            const typeText = item.type?.trim();
+            const url = item.url?.trim();
+            const pdfUrl = item.pdf_url?.trim();
+            return (
+              <div key={`${title}-${titleText}-${dateText}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="text-sm font-medium text-slate-800">{titleText}</div>
+                <div className="mt-1 text-xs text-slate-500">{dateText}{typeText ? ` · ${typeText}` : ""}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {url ? (
+                    <a className="inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100" href={url} target="_blank" rel="noreferrer">原文</a>
+                  ) : (
+                    <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs text-slate-400">原文</span>
+                  )}
+                  {pdfUrl ? (
+                    <a className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100" href={pdfUrl} target="_blank" rel="noreferrer">PDF</a>
+                  ) : (
+                    <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs text-slate-400">PDF</span>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="text-xs text-slate-500">暂无公告。</div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function buildAssistantMessage(payload: AssistantResponse): ChatMessage {
+  const hasAnnouncementEvidence = (payload.evidence || []).some((item) => item.label?.includes(ANNOUNCEMENT_EVIDENCE_LABEL));
+  const announcements = hasAnnouncementEvidence ? payload.announcements ?? [] : undefined;
+  const perFundAnnouncements = (payload.per_fund || [])
+    .map((item) => {
+      const items = item.announcements ?? [];
+      if (!items.length) return null;
+      const name = resolveFundName(item.name, item.name_display) || item.name || item.fund_id;
+      return { fund_id: item.fund_id, name, items };
+    })
+    .filter(Boolean) as Array<{ fund_id: string; name: string; items: AnnouncementItem[] }>;
+
+  return {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    text: assistantText(payload),
+    announcements,
+    perFundAnnouncements: perFundAnnouncements.length ? perFundAnnouncements : undefined,
+  };
 }
 
 function formFromConfig(config?: AiConfig | null): ConfigFormState {
@@ -848,7 +914,7 @@ export default function App() {
         question: cleanQuestion,
         estimateMode,
       });
-      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: assistantText(payload) }]);
+      setChatMessages((current) => [...current, buildAssistantMessage(payload)]);
       if (!portfolioQuestion && targetFundId) {
         setActiveFundId(targetFundId);
       }
@@ -1034,8 +1100,18 @@ export default function App() {
                 <div className="flex-1 p-4 overflow-y-auto no-scrollbar flex flex-col space-y-4 bg-gray-50/50">
                   {chatMessages.map((message) => (
                     <div key={message.id} className={message.role === "user" ? "flex items-end justify-end" : "flex items-start"}>
-                      <div className={message.role === "user" ? "bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%] whitespace-pre-line" : "bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed whitespace-pre-line"}>
-                        {message.text}
+                      <div className={message.role === "user" ? "bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%] whitespace-pre-line" : "bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed"}>
+                        <div className="whitespace-pre-line">{message.text}</div>
+                        {message.role === "assistant" && message.announcements ? (
+                          <AnnouncementCard title={ANNOUNCEMENT_EVIDENCE_LABEL} items={message.announcements} />
+                        ) : null}
+                        {message.role === "assistant" && message.perFundAnnouncements?.length ? (
+                          <div className="mt-3 space-y-2">
+                            {message.perFundAnnouncements.map((item) => (
+                              <AnnouncementCard key={`${item.fund_id}-announcement`} title={`${item.name} · ${ANNOUNCEMENT_EVIDENCE_LABEL}`} items={item.items} />
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ))}

@@ -217,6 +217,14 @@ export interface AssistantHolding {
   today_estimated_pnl?: number;
 }
 
+export interface AnnouncementItem {
+  date?: string;
+  title?: string;
+  type?: string;
+  url?: string;
+  pdf_url?: string;
+}
+
 export interface AssistantPerFund {
   fund_id: string;
   name?: string;
@@ -226,6 +234,7 @@ export interface AssistantPerFund {
   suggestion?: string;
   evidence?: Array<{ label: string; value: string; detail: string }>;
   announcement_evidence?: { label?: string; value?: string; detail?: string };
+  announcements?: AnnouncementItem[];
 }
 
 export interface AssistantPortfolioMeta {
@@ -247,6 +256,7 @@ export interface AssistantResponse {
   portfolio?: AssistantPortfolioMeta;
   per_fund?: AssistantPerFund[];
   portfolio_actions?: string[];
+  announcements?: AnnouncementItem[];
 }
 
 export interface OcrResponse {
