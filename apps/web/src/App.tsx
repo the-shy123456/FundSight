@@ -592,6 +592,7 @@ export default function App() {
   const [ocrWarnings, setOcrWarnings] = useState<string[]>([]);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogRelatedKeywords, setCatalogRelatedKeywords] = useState<string[]>([]);
   const [catalogItems, setCatalogItems] = useState<FundCatalogItem[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogPage, setCatalogPage] = useState(1);
@@ -1157,6 +1158,20 @@ export default function App() {
     setDetailNotice("");
   }
 
+  function openLibraryFilter(keyword: string) {
+    const cleanKeyword = keyword.trim();
+    if (!cleanKeyword) return;
+    setDetailOpen(false);
+    setThemeOpen(false);
+    setThemeNotice("");
+    setActiveTab("library");
+    setCatalogQuery(cleanKeyword);
+    setCatalogPage(1);
+    setCatalogRelatedKeywords((current) => [cleanKeyword, ...current.filter((item) => item !== cleanKeyword)].slice(0, 8));
+    setPageNotice(`已按关联筛选：${cleanKeyword}`);
+    void loadCatalog({ query: cleanKeyword, page: 1, pageSize: catalogPageSize });
+  }
+
   function openThemeDrawer(theme: string) {
     const cleanTheme = theme.trim();
     if (!cleanTheme) return;
@@ -1524,21 +1539,62 @@ export default function App() {
           <div className="h-full flex flex-col">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex items-center justify-between gap-4">
               <h2 className="text-lg font-bold text-gray-800">全市场基金库概览</h2>
-              <div className="flex gap-4 w-1/2">
-                <input
-                  type="text"
-                  value={catalogQuery}
-                  onChange={(event) => setCatalogQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void loadCatalog({ query: catalogQuery, page: 1, pageSize: catalogPageSize });
-                    }
-                  }}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm"
-                  placeholder="输入基金代码/拼音搜索..."
-                />
-                <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: 1, pageSize: catalogPageSize })} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium">搜索</button>
+              <div className="flex flex-col gap-2 w-full md:w-1/2">
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    value={catalogQuery}
+                    onChange={(event) => {
+                      setCatalogQuery(event.target.value);
+                      setPageNotice("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void loadCatalog({ query: catalogQuery, page: 1, pageSize: catalogPageSize });
+                      }
+                    }}
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm"
+                    placeholder="输入基金代码/主题/行业关键词筛选..."
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadCatalog({ query: catalogQuery, page: 1, pageSize: catalogPageSize })}
+                    className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium"
+                  >
+                    搜索
+                  </button>
+                  {catalogQuery.trim() ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCatalogQuery("");
+                        setCatalogPage(1);
+                        setPageNotice("");
+                        void loadCatalog({ query: "", page: 1, pageSize: catalogPageSize });
+                      }}
+                      className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:bg-gray-50"
+                    >
+                      清除
+                    </button>
+                  ) : null}
+                </div>
+
+                {catalogRelatedKeywords.length ? (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                    <span className="font-medium text-gray-500">关联筛选：</span>
+                    {catalogRelatedKeywords.map((keyword) => (
+                      <button
+                        key={`catalog-related-${keyword}`}
+                        type="button"
+                        className="px-2.5 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        onClick={() => openLibraryFilter(keyword)}
+                      >
+                        {keyword}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -1564,7 +1620,19 @@ export default function App() {
                               <div className="text-sm font-medium text-gray-900">{resolveFundName(item.name, item.name_display) || item.name}</div>
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
                             </td>
-                            <td className="px-6 py-4 text-sm text-gray-600">{item.theme || "--"}</td>
+                            <td className="px-6 py-4 text-sm text-gray-600">
+                              {item.theme ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLibraryFilter(item.theme || "")}
+                                  className="px-2.5 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-medium"
+                                >
+                                  {item.theme}
+                                </button>
+                              ) : (
+                                "--"
+                              )}
+                            </td>
                             <td className="px-6 py-4 text-sm text-gray-600">{item.risk_level || "--"}</td>
                             <td className="px-6 py-4 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
                             <td className="px-6 py-4 text-center">
@@ -1958,7 +2026,7 @@ export default function App() {
                           key={`related-chip-${chip}`}
                           type="button"
                           className="px-3 py-1.5 rounded-full text-xs font-medium border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100"
-                          onClick={() => openThemeDrawer(chip)}
+                          onClick={() => openLibraryFilter(chip)}
                         >
                           {chip}
                         </button>
