@@ -21,6 +21,9 @@ HTTP_HEADERS = {
 CACHE: dict[tuple[str, str], tuple[float, Any]] = {}
 DEFAULT_REAL_FUND_CODES = ("005827", "161725", "002190")
 THEME_RULES = (
+    ("电网设备", "电网设备"),
+    ("电网", "电网设备"),
+    ("电力设备", "电网设备"),
     ("白酒", "白酒消费"),
     ("酒", "白酒消费"),
     ("新能源", "新能源"),
