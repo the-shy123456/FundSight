@@ -3,9 +3,11 @@ import type {
   FundCatalogItem,
   FundCatalogResponse,
   ManualRow,
+  NavTrendResponse,
   OcrResponse,
   PortfolioIntraday,
   PortfolioSnapshot,
+  TopHoldingsResponse,
 } from "../types";
 import { normalizeFundCode, parseNumber } from "./format";
 
@@ -52,6 +54,18 @@ export async function requestFundsCatalog({
   }
 
   return fetchJson<FundCatalogResponse>(`/api/v1/funds?page=${page}&page_size=${pageSize}`);
+}
+
+export async function requestFundNavTrend(fundId: string, range: "1m" | "3m" | "6m" | "1y" | "all" = "6m"): Promise<NavTrendResponse> {
+  return fetchJson<NavTrendResponse>(
+    `/api/v1/funds/${encodeURIComponent(fundId)}/nav-trend?range=${encodeURIComponent(range)}`,
+  );
+}
+
+export async function requestFundTopHoldings(fundId: string, limit = 10): Promise<TopHoldingsResponse> {
+  return fetchJson<TopHoldingsResponse>(
+    `/api/v1/funds/${encodeURIComponent(fundId)}/top-holdings?limit=${encodeURIComponent(limit)}`,
+  );
 }
 
 export async function requestFundSearch(keyword: string, limit = 10): Promise<FundCatalogItem[]> {

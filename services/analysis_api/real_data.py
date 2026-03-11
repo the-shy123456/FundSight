@@ -212,6 +212,90 @@ def _infer_theme(name: str) -> str:
             return theme
     return "均衡成长"
 
+
+def _format_nav_date(timestamp_ms: int) -> str:
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone(timedelta(hours=8)))
+    return dt.date().isoformat()
+
+
+def _date_to_timestamp_ms(value: date) -> int:
+    dt = datetime.combine(value, datetime.min.time(), tzinfo=timezone(timedelta(hours=8)))
+    return int(dt.timestamp() * 1000)
+
+
+def parse_nav_trend(pingzhong_source: str) -> list[dict[str, Any]]:
+    raw = _parse_js_value(pingzhong_source, "Data_netWorthTrend", [])
+    if not isinstance(raw, list):
+        return []
+
+    points: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        nav_value = item.get("y")
+        try:
+            nav = float(nav_value)
+        except (TypeError, ValueError):
+            continue
+        if nav <= 0:
+            continue
+
+        timestamp_ms = 0
+        if "x" in item:
+            try:
+                timestamp_ms = int(float(item.get("x", 0)))
+            except (TypeError, ValueError):
+                timestamp_ms = 0
+            if timestamp_ms and timestamp_ms < 10**11:
+                timestamp_ms *= 1000
+        if not timestamp_ms:
+            date_text = str(item.get("date") or "").strip()
+            if date_text:
+                try:
+                    parsed_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+                    timestamp_ms = _date_to_timestamp_ms(parsed_date)
+                except ValueError:
+                    timestamp_ms = 0
+        if not timestamp_ms:
+            continue
+
+        points.append(
+            {
+                "x": int(timestamp_ms),
+                "date": _format_nav_date(int(timestamp_ms)),
+                "nav": round(nav, 4),
+            }
+        )
+
+    return points
+
+
+def _build_sample_nav_trend(fund: FundProfile, min_points: int = 30) -> list[dict[str, Any]]:
+    values = list(fund.nav_history)
+    if not values:
+        return []
+    total_points = max(min_points, len(values))
+    today = date.today()
+    last_index = len(values) - 1
+    points: list[dict[str, Any]] = []
+    for idx in range(total_points):
+        ratio = idx / (total_points - 1) if total_points > 1 else 0
+        raw_index = ratio * last_index
+        lower = int(raw_index)
+        upper = min(lower + 1, last_index)
+        interpolated = values[lower] + (values[upper] - values[lower]) * (raw_index - lower)
+        point_date = today - timedelta(days=total_points - 1 - idx)
+        timestamp_ms = _date_to_timestamp_ms(point_date)
+        points.append(
+            {
+                "x": timestamp_ms,
+                "date": point_date.isoformat(),
+                "nav": round(float(interpolated), 4),
+            }
+        )
+    return points
+
+
 def _parse_nav_history(pingzhong_source: str, max_points: int = 12) -> tuple[float, ...]:
     net_worth_trend = _parse_js_value(pingzhong_source, "Data_netWorthTrend", [])
     values = [float(item.get("y", 0.0)) for item in net_worth_trend if float(item.get("y", 0.0)) > 0]
@@ -473,6 +557,71 @@ def fetch_top_holdings(fund_code: str, topline: int = 10) -> dict[str, Any]:
         )
     payload = {"disclosure_date": disclosure_date, "items": items}
     return _cache_set("holdings", cache_key, payload)
+
+
+def fetch_nav_trend(fund_code: str) -> list[dict[str, Any]]:
+    cache_key = fund_code.strip()
+    cached = _cache_get("nav_trend", cache_key, 600)
+    if cached is not None:
+        return cached
+
+    if is_real_fund_code(cache_key):
+        source = fetch_pingzhong_source(cache_key)
+        points = parse_nav_trend(source)
+    else:
+        from .sample_data import FUNDS
+
+        fund = next((item for item in FUNDS if item.fund_id == cache_key), None)
+        if fund is None:
+            raise RealFundDataError(f"基金 {fund_code} 不存在")
+        points = _build_sample_nav_trend(fund)
+
+    return _cache_set("nav_trend", cache_key, points)
+
+
+def fetch_top_holdings_with_quotes(fund_code: str, limit: int = 10) -> dict[str, Any]:
+    cache_key = f"{fund_code}:{limit}"
+    ttl_seconds = 60 if _is_trading_time_cn(datetime.utcnow()) else 300
+    cached = _cache_get("holdings_quotes", cache_key, ttl_seconds)
+    if cached is not None:
+        return cached
+
+    payload = fetch_top_holdings(fund_code, topline=limit)
+    items = payload.get("items", [])
+    secids = [item.get("secid", "") for item in items if item.get("secid")]
+
+    quotes: dict[str, dict[str, Any]] = {}
+    if secids:
+        def _safe_fetch(secid: str) -> tuple[str, dict[str, Any] | None]:
+            try:
+                return secid, fetch_security_quote(secid)
+            except Exception:
+                return secid, None
+
+        with ThreadPoolExecutor(max_workers=min(6, len(secids))) as executor:
+            for secid, quote in executor.map(_safe_fetch, secids):
+                if quote:
+                    quotes[secid] = quote
+
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        secid = item.get("secid", "")
+        quote = quotes.get(secid, {})
+        weight_percent = float(item.get("weight_percent", 0.0) or 0.0)
+        change_rate = float(quote.get("change_rate", 0.0) or 0.0)
+        contribution = (weight_percent / 100) * change_rate
+        enriched.append(
+            {
+                "code": str(item.get("code", "")),
+                "name": str(item.get("name", "")),
+                "weight_percent": round(weight_percent, 4),
+                "price": float(quote.get("price", 0.0) or 0.0),
+                "change_rate": round(change_rate, 4),
+                "contribution": round(contribution, 4),
+            }
+        )
+
+    return _cache_set("holdings_quotes", cache_key, {"disclosure_date": payload.get("disclosure_date", ""), "items": enriched})
 
 def fetch_security_quote(secid: str) -> dict[str, Any]:
     if not secid:

@@ -138,6 +138,32 @@ export interface FundCatalogResponse {
   page_size: number;
 }
 
+export interface NavTrendPoint {
+  x: number;
+  date: string;
+  nav: number;
+}
+
+export interface NavTrendResponse {
+  fund_id: string;
+  range: "1m" | "3m" | "6m" | "1y" | "all";
+  points: NavTrendPoint[];
+}
+
+export interface HoldingCompanyItem {
+  code: string;
+  name: string;
+  weight_percent: number;
+  price: number;
+  change_rate: number;
+  contribution: number;
+}
+
+export interface TopHoldingsResponse {
+  disclosure_date: string;
+  items: HoldingCompanyItem[];
+}
+
 export interface Forecast {
   horizon_trading_days?: number;
   direction?: "up" | "down";

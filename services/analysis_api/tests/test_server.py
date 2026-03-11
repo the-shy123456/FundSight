@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import threading
 import unittest
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -230,6 +231,40 @@ class ServerRouteTestCase(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 1)
         first = payload["items"][0]
         for key in ("title", "type", "date", "url", "pdf_url"):
+            self.assertIn(key, first)
+
+    @patch("services.analysis_api.server.fetch_nav_trend")
+    def test_fund_nav_trend_endpoint_returns_points(self, mock_fetch) -> None:
+        now_ms = int(time.time() * 1000)
+        mock_fetch.return_value = [{"x": now_ms, "date": "2026-03-10", "nav": 1.2345}]
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/nav-trend?range=1m")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["fund_id"], "005827")
+        self.assertEqual(payload["range"], "1m")
+        self.assertTrue(payload["points"])
+
+    @patch("services.analysis_api.server.fetch_top_holdings_with_quotes")
+    def test_fund_top_holdings_endpoint_returns_items(self, mock_fetch) -> None:
+        mock_fetch.return_value = {
+            "disclosure_date": "2026-03-10",
+            "items": [
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "weight_percent": 9.8,
+                    "price": 1800.0,
+                    "change_rate": 0.0123,
+                    "contribution": 0.0012,
+                }
+            ],
+        }
+        response = urllib.request.urlopen(f"{self.base_url}/api/v1/funds/005827/top-holdings?limit=10")
+        payload = json.loads(response.read().decode("utf-8"))
+        self.assertIn("disclosure_date", payload)
+        self.assertIn("items", payload)
+        self.assertTrue(payload["items"])
+        first = payload["items"][0]
+        for key in ("code", "name", "weight_percent", "price", "change_rate", "contribution"):
             self.assertIn(key, first)
 
     @patch("services.analysis_api.intraday_estimator.fetch_fund_estimate")

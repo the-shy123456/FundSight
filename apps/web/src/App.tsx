@@ -17,6 +17,8 @@ import {
   buildImportTextFromRows,
   requestAssistant,
   requestFundSearch,
+  requestFundNavTrend,
+  requestFundTopHoldings,
   requestFundsCatalog,
   requestHoldingsImport,
   requestHoldingsOcr,
@@ -50,9 +52,12 @@ import type {
   FundCatalogItem,
   ImportTab,
   ManualRow,
+  NavTrendPoint,
+  NavTrendResponse,
   PortfolioIntraday,
   PortfolioPosition,
   PortfolioSnapshot,
+  TopHoldingsResponse,
   ViewTab,
 } from "./types";
 
@@ -77,6 +82,7 @@ type ConfigFormState = {
 };
 
 type EstimateMode = "auto" | "official" | "penetration";
+type NavRange = "1m" | "3m" | "6m" | "1y" | "all";
 
 function createManualEntry(): ManualEntry {
   return { query: "", fundName: "", amount: "", profit: "" };
@@ -87,6 +93,14 @@ const ESTIMATE_MODE_LABELS: Record<EstimateMode, string> = {
   official: "官方",
   penetration: "穿透",
 };
+
+const NAV_RANGE_OPTIONS: Array<{ value: NavRange; label: string }> = [
+  { value: "1m", label: "1个月" },
+  { value: "3m", label: "3个月" },
+  { value: "6m", label: "6个月" },
+  { value: "1y", label: "1年" },
+  { value: "all", label: "全部" },
+];
 
 const PORTFOLIO_QUESTION_KEYWORDS = [
   "组合",
@@ -137,8 +151,30 @@ function formatPlainAmount(value: unknown): string {
   });
 }
 
+function formatWeightPercent(value: unknown): string {
+  return `${parseNumber(value).toFixed(2)}%`;
+}
+
 function resolveFundName(name?: string | null, nameDisplay?: string | null): string {
   return (nameDisplay ?? name ?? "").trim();
+}
+
+function buildNavPolyline(points: NavTrendPoint[], width = 600, height = 180, padding = 12): string {
+  if (!points.length) return "";
+  const values = points.map((point) => point.nav);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  return points
+    .map((point, index) => {
+      const ratio = points.length > 1 ? index / (points.length - 1) : 0.5;
+      const x = padding + ratio * usableWidth;
+      const y = padding + (1 - (point.nav - min) / span) * usableHeight;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
 }
 
 function nowLabel(): string {
@@ -343,6 +379,14 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [activeFundId, setActiveFundId] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailFundId, setDetailFundId] = useState("");
+  const [detailRange, setDetailRange] = useState<NavRange>("6m");
+  const [detailNavTrend, setDetailNavTrend] = useState<NavTrendResponse | null>(null);
+  const [detailHoldings, setDetailHoldings] = useState<TopHoldingsResponse | null>(null);
+  const [detailNavLoading, setDetailNavLoading] = useState(false);
+  const [detailHoldingsLoading, setDetailHoldingsLoading] = useState(false);
+  const [detailNotice, setDetailNotice] = useState("");
   const [aiConfigs, setAiConfigs] = useState<AiConfig[]>(initialConfigs);
   const [estimateMode, setEstimateMode] = useState<EstimateMode>(restoreEstimateMode());
   const [configForm, setConfigForm] = useState<ConfigFormState>(() =>
@@ -353,6 +397,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [pageNotice, setPageNotice] = useState("");
   const relatedRequestIdRef = useRef(0);
+  const navTrendRequestIdRef = useRef(0);
+  const holdingsRequestIdRef = useRef(0);
 
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
@@ -365,6 +411,27 @@ export default function App() {
   const updateStatusWithMode = `${updateStatusText}｜估值源：${estimateModeLabel}`;
   const activeConfig = useMemo(() => aiConfigs.find((item) => item.active) || aiConfigs[0] || null, [aiConfigs]);
   const topContribution = intraday?.contributions?.[0];
+  const detailFund = useMemo(
+    () => positions.find((item) => item.fund_id === detailFundId) || null,
+    [positions, detailFundId],
+  );
+  const detailHoldingsSorted = useMemo(() => {
+    const items = detailHoldings?.items ?? [];
+    return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
+  }, [detailHoldings]);
+  const navPoints = detailNavTrend?.points ?? [];
+  const navPolyline = useMemo(() => buildNavPolyline(navPoints), [navPoints]);
+  const navSummary = useMemo(() => {
+    if (!navPoints.length) {
+      return { min: 0, max: 0, latest: 0 };
+    }
+    const values = navPoints.map((point) => point.nav);
+    return {
+      min: Math.min(...values),
+      max: Math.max(...values),
+      latest: values[values.length - 1],
+    };
+  }, [navPoints]);
 
   useEffect(() => {
     saveManualRows(manualRows);
@@ -538,6 +605,64 @@ export default function App() {
         setRelatedLoading(false);
       }
     }
+  }
+
+  async function loadNavTrend(fundId: string, range: NavRange) {
+    if (!fundId) return;
+    const requestId = navTrendRequestIdRef.current + 1;
+    navTrendRequestIdRef.current = requestId;
+    setDetailNavLoading(true);
+    setDetailNotice("");
+    try {
+      const payload = await requestFundNavTrend(fundId, range);
+      if (navTrendRequestIdRef.current !== requestId) return;
+      setDetailNavTrend(payload);
+    } catch (error) {
+      if (navTrendRequestIdRef.current !== requestId) return;
+      setDetailNavTrend(null);
+      setDetailNotice(error instanceof Error ? error.message : "净值曲线加载失败。");
+    } finally {
+      if (navTrendRequestIdRef.current === requestId) {
+        setDetailNavLoading(false);
+      }
+    }
+  }
+
+  async function loadTopHoldings(fundId: string) {
+    if (!fundId) return;
+    const requestId = holdingsRequestIdRef.current + 1;
+    holdingsRequestIdRef.current = requestId;
+    setDetailHoldingsLoading(true);
+    setDetailNotice("");
+    try {
+      const payload = await requestFundTopHoldings(fundId, 10);
+      if (holdingsRequestIdRef.current !== requestId) return;
+      setDetailHoldings(payload);
+    } catch (error) {
+      if (holdingsRequestIdRef.current !== requestId) return;
+      setDetailHoldings(null);
+      setDetailNotice(error instanceof Error ? error.message : "持仓数据加载失败。");
+    } finally {
+      if (holdingsRequestIdRef.current === requestId) {
+        setDetailHoldingsLoading(false);
+      }
+    }
+  }
+
+  function openFundDetail(item: PortfolioPosition) {
+    setDetailOpen(true);
+    setDetailFundId(item.fund_id);
+    setDetailRange("6m");
+    setDetailNavTrend(null);
+    setDetailHoldings(null);
+    setDetailNotice("");
+    void loadNavTrend(item.fund_id, "6m");
+    void loadTopHoldings(item.fund_id);
+  }
+
+  function closeFundDetail() {
+    setDetailOpen(false);
+    setDetailNotice("");
   }
 
   function openImportModal() {
@@ -796,7 +921,22 @@ export default function App() {
                           <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.today_estimated_return ?? item.today_return)}`}>{formatSignedPercent(item.today_estimated_return ?? item.today_return)}</td>
                           <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.today_estimated_pnl ?? item.today_profit)}`}>{formatSignedCurrency(item.today_estimated_pnl ?? item.today_profit).replace("¥", "")}</td>
                           <td className="px-6 py-4 whitespace-nowrap text-center">
-                            <button type="button" className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium" onClick={() => void ask(buildAnalysisQuestion(item), item.fund_id)}>AI分析</button>
+                            <div className="inline-flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium"
+                                onClick={() => openFundDetail(item)}
+                              >
+                                详情
+                              </button>
+                              <button
+                                type="button"
+                                className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium"
+                                onClick={() => void ask(buildAnalysisQuestion(item), item.fund_id)}
+                              >
+                                AI分析
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )) : (
@@ -972,6 +1112,139 @@ export default function App() {
           </div>
         ) : null}
       </main>
+
+      {detailOpen ? (
+        <div className="fixed inset-0 z-40 flex">
+          <button type="button" className="flex-1 bg-gray-900/40" onClick={closeFundDetail} aria-label="关闭详情遮罩" />
+          <div className="w-full max-w-xl bg-white h-full shadow-2xl flex flex-col border-l border-gray-200">
+            <div className="px-5 py-4 border-b border-gray-100 bg-gray-50">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">基金详情</p>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    {resolveFundName(detailFund?.name, detailFund?.name_display) || detailFund?.name || detailFundId || "--"}
+                    <span className="ml-2 text-sm font-medium text-gray-500">{detailFund?.fund_id || detailFundId}</span>
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1">净值曲线覆盖从成立到现在，可切换不同区间。</p>
+                </div>
+                <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              {detailNotice ? <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{detailNotice}</div> : null}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-gray-800">净值曲线</h4>
+                  <span className="text-xs text-gray-500">最新净值 {navSummary.latest ? navSummary.latest.toFixed(4) : "--"}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {NAV_RANGE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        setDetailRange(option.value);
+                        void loadNavTrend(detailFundId, option.value);
+                      }}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium border ${detailRange === option.value ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"}`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 bg-slate-50 border border-slate-200 rounded-lg px-3 py-4">
+                  {detailNavLoading ? (
+                    <div className="text-xs text-gray-500 flex items-center"><LoaderCircle className="h-4 w-4 mr-2 animate-spin text-blue-500" />净值曲线加载中...</div>
+                  ) : navPoints.length ? (
+                    <svg viewBox="0 0 600 180" className="w-full h-44">
+                      <polyline
+                        fill="none"
+                        stroke="rgb(37 99 235)"
+                        strokeWidth="3"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        points={navPolyline}
+                      />
+                    </svg>
+                  ) : (
+                    <div className="text-xs text-gray-500">暂无净值曲线数据。</div>
+                  )}
+                </div>
+                <div className="mt-2 text-xs text-gray-500 flex items-center justify-between">
+                  <span>最低 {navSummary.min ? navSummary.min.toFixed(4) : "--"}</span>
+                  <span>最高 {navSummary.max ? navSummary.max.toFixed(4) : "--"}</span>
+                </div>
+              </section>
+
+              <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-gray-800">前10大持仓</h4>
+                  <span className="text-xs text-gray-500">披露日期 {detailHoldings?.disclosure_date || "--"}</span>
+                </div>
+                <div className="mt-3 border border-gray-200 rounded-lg overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-200 text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600">公司</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-600">权重</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-600">今日涨跌</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-600">贡献</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {detailHoldingsLoading ? (
+                        <tr>
+                          <td className="px-3 py-3 text-center text-gray-500" colSpan={4}>持仓加载中...</td>
+                        </tr>
+                      ) : detailHoldingsSorted.length ? (
+                        detailHoldingsSorted.map((item) => (
+                          <tr key={`${item.code}-${item.name}`}>
+                            <td className="px-3 py-2 text-gray-800 font-medium">{item.name || item.code}</td>
+                            <td className="px-3 py-2 text-right text-gray-600">{formatWeightPercent(item.weight_percent)}</td>
+                            <td className={`px-3 py-2 text-right font-medium ${toneClass(item.change_rate)}`}>{formatSignedPercent(item.change_rate)}</td>
+                            <td className={`px-3 py-2 text-right font-medium ${toneClass(item.contribution)}`}>{formatSignedPercent(item.contribution)}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td className="px-3 py-3 text-center text-gray-500" colSpan={4}>暂无持仓数据。</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">关联板块</p>
+                    <p className="text-sm font-semibold text-gray-800 mt-1">{detailFund?.theme || "--"}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
+                    disabled={!detailFund?.theme}
+                    onClick={() => {
+                      const theme = detailFund?.theme?.trim();
+                      if (!theme) return;
+                      setActiveTab("library");
+                      setCatalogQuery(theme);
+                      void loadCatalog({ query: theme, page: 1, pageSize: catalogPageSize });
+                      setDetailOpen(false);
+                    }}
+                  >
+                    查看同板块基金
+                  </button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {importOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm transition-opacity">

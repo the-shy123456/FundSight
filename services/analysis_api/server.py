@@ -2,6 +2,7 @@
 
 import json
 import mimetypes
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,7 +18,14 @@ from .name_display import attach_name_display
 from .ocr_import import extract_holdings_from_image_data
 from .portfolio import build_portfolio_intraday, build_portfolio_snapshot, find_fund
 from .research import build_research_brief
-from .real_data import fetch_fund_announcements, fetch_fund_catalog, is_real_fund_code, search_real_funds
+from .real_data import (
+    fetch_fund_announcements,
+    fetch_fund_catalog,
+    fetch_nav_trend,
+    fetch_top_holdings_with_quotes,
+    is_real_fund_code,
+    search_real_funds,
+)
 from .sample_data import FUNDS
 
 
@@ -80,6 +88,34 @@ def parse_search_limit(raw_limit: str | None, default: int = 20) -> int:
     if not 1 <= limit <= 50:
         raise ValueError("limit 必须在 1-50 之间")
     return limit
+
+
+def parse_top_holdings_limit(raw_limit: str | None, default: int = 10) -> int:
+    if raw_limit is None:
+        return default
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit 必须是数字") from exc
+    if not 1 <= limit <= 20:
+        raise ValueError("limit 必须在 1-20 之间")
+    return limit
+
+
+def parse_nav_range(raw_range: str | None) -> str:
+    value = str(raw_range or "6m").strip().lower()
+    if value not in {"1m", "3m", "6m", "1y", "all"}:
+        raise ValueError("range 仅支持 1m、3m、6m、1y、all")
+    return value
+
+
+def filter_nav_points(points: list[dict[str, Any]], range_key: str) -> list[dict[str, Any]]:
+    if range_key == "all":
+        return points
+    days_map = {"1m": 30, "3m": 92, "6m": 183, "1y": 366}
+    days = days_map.get(range_key, 183)
+    cutoff = int(time.time() * 1000) - days * 24 * 60 * 60 * 1000
+    return [point for point in points if int(point.get("x", 0) or 0) >= cutoff]
 
 
 def parse_estimate_mode_value(value: object | None) -> str:
@@ -217,6 +253,57 @@ class FundInsightHandler(BaseHTTPRequestHandler):
                         "total": payload.get("total", len(payload.get("items", []))),
                     },
                 )
+                return
+            if relative_path.endswith("/nav-trend"):
+                fund_id = relative_path.removesuffix("/nav-trend")
+                query = parse_qs(parsed.query)
+                try:
+                    range_key = parse_nav_range(query.get("range", ["6m"])[0])
+                except ValueError as exc:
+                    json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                if is_real_fund_code(fund_id):
+                    try:
+                        points = fetch_nav_trend(fund_id)
+                    except Exception:
+                        json_response(self, {"message": "净值曲线抓取失败"}, HTTPStatus.BAD_GATEWAY)
+                        return
+                else:
+                    fund = find_fund(fund_id, FUNDS)
+                    if not fund:
+                        json_response(self, {"message": "基金不存在"}, HTTPStatus.NOT_FOUND)
+                        return
+                    points = fetch_nav_trend(fund_id)
+                json_response(
+                    self,
+                    {
+                        "fund_id": fund_id,
+                        "range": range_key,
+                        "points": filter_nav_points(points, range_key),
+                    },
+                )
+                return
+            if relative_path.endswith("/top-holdings"):
+                fund_id = relative_path.removesuffix("/top-holdings")
+                query = parse_qs(parsed.query)
+                try:
+                    limit = parse_top_holdings_limit(query.get("limit", [None])[0])
+                except ValueError as exc:
+                    json_response(self, {"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                if is_real_fund_code(fund_id):
+                    try:
+                        payload = fetch_top_holdings_with_quotes(fund_id, limit=limit)
+                    except Exception:
+                        json_response(self, {"message": "持仓抓取失败"}, HTTPStatus.BAD_GATEWAY)
+                        return
+                else:
+                    fund = find_fund(fund_id, FUNDS)
+                    if not fund:
+                        json_response(self, {"message": "基金不存在"}, HTTPStatus.NOT_FOUND)
+                        return
+                    payload = {"disclosure_date": "", "items": []}
+                json_response(self, payload)
                 return
             if relative_path.endswith("/snapshot"):
                 fund_id = relative_path.removesuffix("/snapshot")
