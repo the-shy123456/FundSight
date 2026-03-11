@@ -210,7 +210,7 @@ function planTypeLabel(planType: PlanType): string {
 
 const NAV_CHART_WIDTH = 600;
 const NAV_CHART_HEIGHT = 180;
-const NAV_CHART_PADDING_X = 36;
+const NAV_CHART_PADDING_X = 56;
 const NAV_CHART_PADDING_Y = 24;
 const NAV_RETURN_MIN_PADDING = 0.01;
 const NAV_RETURN_TICK_COUNT = 5;
