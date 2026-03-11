@@ -210,26 +210,96 @@ function planTypeLabel(planType: PlanType): string {
 
 const NAV_CHART_WIDTH = 600;
 const NAV_CHART_HEIGHT = 180;
-const NAV_CHART_PADDING = 12;
+const NAV_CHART_PADDING_X = 36;
+const NAV_CHART_PADDING_Y = 24;
+const NAV_RETURN_MIN_PADDING = 0.01;
+const NAV_RETURN_TICK_COUNT = 5;
 
-function buildNavPolyline(
+type ReturnSummary = {
+  min: number;
+  max: number;
+  paddedMin: number;
+  paddedMax: number;
+  span: number;
+  ticks: number[];
+};
+
+function computeReturnSeries(points: NavTrendPoint[]): { baseNav: number; returns: number[] } {
+  if (!points.length) return { baseNav: 0, returns: [] };
+  const baseNav = points[0]?.nav ?? 0;
+  if (!baseNav) {
+    return { baseNav, returns: points.map(() => 0) };
+  }
+  return {
+    baseNav,
+    returns: points.map((point) => point.nav / baseNav - 1),
+  };
+}
+
+function buildReturnSummary(returns: number[], tickCount = NAV_RETURN_TICK_COUNT): ReturnSummary {
+  if (!returns.length) {
+    const paddedMin = -NAV_RETURN_MIN_PADDING;
+    const paddedMax = NAV_RETURN_MIN_PADDING;
+    return {
+      min: 0,
+      max: 0,
+      paddedMin,
+      paddedMax,
+      span: paddedMax - paddedMin,
+      ticks: Array.from({ length: tickCount }, (_, index) => paddedMin + (paddedMax - paddedMin) * (index / (tickCount - 1))),
+    };
+  }
+  const min = Math.min(...returns);
+  const max = Math.max(...returns);
+  const span = max - min;
+  const basePad = span > 0 ? span * 0.1 : Math.abs(max || min) * 0.1;
+  const pad = Math.max(basePad, NAV_RETURN_MIN_PADDING);
+  let paddedMin = min - pad;
+  let paddedMax = max + pad;
+  if (paddedMin === paddedMax) {
+    paddedMin -= NAV_RETURN_MIN_PADDING;
+    paddedMax += NAV_RETURN_MIN_PADDING;
+  }
+  const paddedSpan = paddedMax - paddedMin || 1;
+  const ticks = Array.from({ length: tickCount }, (_, index) => paddedMin + paddedSpan * (index / (tickCount - 1)));
+  return {
+    min,
+    max,
+    paddedMin,
+    paddedMax,
+    span: paddedSpan,
+    ticks,
+  };
+}
+
+function getReturnY(
+  value: number,
+  summary: ReturnSummary,
+  height = NAV_CHART_HEIGHT,
+  paddingY = NAV_CHART_PADDING_Y,
+): number {
+  const usableHeight = height - paddingY * 2;
+  const ratio = summary.span ? (value - summary.paddedMin) / summary.span : 0.5;
+  return paddingY + (1 - ratio) * usableHeight;
+}
+
+function buildReturnPolyline(
   points: NavTrendPoint[],
+  returns: number[],
+  summary: ReturnSummary,
   width = NAV_CHART_WIDTH,
   height = NAV_CHART_HEIGHT,
-  padding = NAV_CHART_PADDING,
+  paddingX = NAV_CHART_PADDING_X,
+  paddingY = NAV_CHART_PADDING_Y,
 ): string {
   if (!points.length) return "";
-  const values = points.map((point) => point.nav);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const usableWidth = width - padding * 2;
-  const usableHeight = height - padding * 2;
+  const usableWidth = width - paddingX * 2;
   return points
     .map((point, index) => {
       const ratio = points.length > 1 ? index / (points.length - 1) : 0.5;
-      const x = padding + ratio * usableWidth;
-      const y = padding + (1 - (point.nav - min) / span) * usableHeight;
+      const x = paddingX + ratio * usableWidth;
+      const value = returns[index] ?? 0;
+      const y = getReturnY(value, summary, height, paddingY);
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
@@ -239,35 +309,55 @@ function getNavIndexFromX(
   x: number,
   total: number,
   width = NAV_CHART_WIDTH,
-  padding = NAV_CHART_PADDING,
+  paddingX = NAV_CHART_PADDING_X,
 ): number | null {
   if (total <= 0) return null;
   if (total === 1) return 0;
-  const usableWidth = width - padding * 2;
+  const usableWidth = width - paddingX * 2;
   if (usableWidth <= 0) return 0;
-  const clamped = Math.min(Math.max(x, padding), padding + usableWidth);
-  const ratio = (clamped - padding) / usableWidth;
+  const clamped = Math.min(Math.max(x, paddingX), paddingX + usableWidth);
+  const ratio = (clamped - paddingX) / usableWidth;
   return Math.min(total - 1, Math.max(0, Math.round(ratio * (total - 1))));
 }
 
-function getNavPointPosition(
+function getReturnPointPosition(
   points: NavTrendPoint[],
+  returns: number[],
   index: number,
-  min: number,
-  max: number,
+  summary: ReturnSummary,
   width = NAV_CHART_WIDTH,
   height = NAV_CHART_HEIGHT,
-  padding = NAV_CHART_PADDING,
+  paddingX = NAV_CHART_PADDING_X,
+  paddingY = NAV_CHART_PADDING_Y,
 ): { x: number; y: number } | null {
   const point = points[index];
   if (!point) return null;
-  const span = max - min || 1;
-  const usableWidth = width - padding * 2;
-  const usableHeight = height - padding * 2;
+  const usableWidth = width - paddingX * 2;
   const ratio = points.length > 1 ? index / (points.length - 1) : 0.5;
-  const x = padding + ratio * usableWidth;
-  const y = padding + (1 - (point.nav - min) / span) * usableHeight;
+  const x = paddingX + ratio * usableWidth;
+  const value = returns[index] ?? 0;
+  const y = getReturnY(value, summary, height, paddingY);
   return { x, y };
+}
+
+function buildNavDateTicks(
+  points: NavTrendPoint[],
+  width = NAV_CHART_WIDTH,
+  paddingX = NAV_CHART_PADDING_X,
+): Array<{ index: number; x: number; label: string }> {
+  if (!points.length) return [];
+  const lastIndex = points.length - 1;
+  const midIndex = Math.floor(lastIndex / 2);
+  const indices = Array.from(new Set([0, midIndex, lastIndex]));
+  const usableWidth = width - paddingX * 2;
+  return indices
+    .map((index) => {
+      const ratio = points.length > 1 ? index / lastIndex : 0.5;
+      const x = paddingX + ratio * usableWidth;
+      const label = points[index]?.date || "--";
+      return { index, x, label };
+    })
+    .filter((tick) => tick.label);
 }
 
 function computeIntervalReturn(points: NavTrendPoint[]): number | null {
@@ -606,33 +696,27 @@ export default function App() {
     return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
   }, [detailHoldings]);
   const navPoints = detailNavTrend?.points ?? [];
-  const navPolyline = useMemo(() => buildNavPolyline(navPoints), [navPoints]);
-  const navSummary = useMemo(() => {
-    if (!navPoints.length) {
-      return { min: 0, max: 0, latest: 0, span: 1 };
-    }
-    const values = navPoints.map((point) => point.nav);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    return {
-      min,
-      max,
-      latest: values[values.length - 1],
-      span: max - min || 1,
-    };
-  }, [navPoints]);
+  const navLatest = useMemo(() => (navPoints.length ? navPoints[navPoints.length - 1]?.nav ?? 0 : 0), [navPoints]);
+  const navReturnSeries = useMemo(() => computeReturnSeries(navPoints), [navPoints]);
+  const navReturns = navReturnSeries.returns;
+  const navReturnSummary = useMemo(() => buildReturnSummary(navReturns), [navReturns]);
+  const navPolyline = useMemo(
+    () => buildReturnPolyline(navPoints, navReturns, navReturnSummary),
+    [navPoints, navReturns, navReturnSummary],
+  );
+  const navDateTicks = useMemo(() => buildNavDateTicks(navPoints), [navPoints]);
   const navHoverPoint = useMemo(() => {
     if (navHoverIndex === null || !navPoints.length) return null;
     const index = Math.min(Math.max(navHoverIndex, 0), navPoints.length - 1);
     const point = navPoints[index];
     if (!point) return null;
-    const position = getNavPointPosition(navPoints, index, navSummary.min, navSummary.max);
+    const position = getReturnPointPosition(navPoints, navReturns, index, navReturnSummary);
     if (!position) return null;
-    return { index, point, ...position };
-  }, [navHoverIndex, navPoints, navSummary.min, navSummary.max]);
+    return { index, point, returnValue: navReturns[index] ?? 0, ...position };
+  }, [navHoverIndex, navPoints, navReturns, navReturnSummary]);
   const navHoverLabel = navHoverPoint
-    ? `${navHoverPoint.point.date || "--"} 净值 ${navHoverPoint.point.nav.toFixed(4)}`
-    : "移动鼠标或触摸查看单点净值";
+    ? `${navHoverPoint.point.date || "--"}｜收益率 ${formatSignedPercent(navHoverPoint.returnValue)}｜净值 ${navHoverPoint.point.nav.toFixed(4)}`
+    : "移动鼠标或触摸查看单点收益率";
   const intervalReturns = detailIntervalReturns ?? {
     "1m": null,
     "3m": null,
@@ -909,7 +993,7 @@ export default function App() {
     } catch (error) {
       if (navTrendRequestIdRef.current !== requestId) return;
       setDetailNavTrend(null);
-      setDetailNotice(error instanceof Error ? error.message : "净值曲线加载失败。");
+      setDetailNotice(error instanceof Error ? error.message : "收益率曲线加载失败。");
     } finally {
       if (navTrendRequestIdRef.current === requestId) {
         setDetailNavLoading(false);
@@ -1600,7 +1684,7 @@ export default function App() {
                     {resolveFundName(detailFund?.name, detailFund?.name_display) || detailFund?.name || detailFundId || "--"}
                     <span className="ml-2 text-sm font-medium text-gray-500">{detailFund?.fund_id || detailFundId}</span>
                   </h3>
-                  <p className="text-xs text-gray-500 mt-1">净值曲线覆盖从成立到现在，可切换不同区间。</p>
+                  <p className="text-xs text-gray-500 mt-1">收益率曲线覆盖从成立到现在，可切换不同区间。</p>
                 </div>
                 <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700">
                   <X className="h-5 w-5" />
@@ -1612,8 +1696,8 @@ export default function App() {
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
               <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-gray-800">净值曲线</h4>
-                  <span className="text-xs text-gray-500">最新净值 {navSummary.latest ? navSummary.latest.toFixed(4) : "--"}</span>
+                  <h4 className="text-sm font-bold text-gray-800">收益率曲线</h4>
+                  <span className="text-xs text-gray-500">最新净值 {navLatest ? navLatest.toFixed(4) : "--"}</span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {NAV_RANGE_OPTIONS.map((option) => (
@@ -1632,7 +1716,7 @@ export default function App() {
                 </div>
                 <div className="mt-4 bg-slate-50 border border-slate-200 rounded-lg px-3 py-4">
                   {detailNavLoading ? (
-                    <div className="text-xs text-gray-500 flex items-center"><LoaderCircle className="h-4 w-4 mr-2 animate-spin text-blue-500" />净值曲线加载中...</div>
+                    <div className="text-xs text-gray-500 flex items-center"><LoaderCircle className="h-4 w-4 mr-2 animate-spin text-blue-500" />收益率曲线加载中...</div>
                   ) : navPoints.length ? (
                     <svg
                       viewBox={`0 0 ${NAV_CHART_WIDTH} ${NAV_CHART_HEIGHT}`}
@@ -1642,6 +1726,30 @@ export default function App() {
                       onPointerLeave={handleNavPointerLeave}
                       style={{ touchAction: "none" }}
                     >
+                      {navReturnSummary.ticks.map((tickValue, index) => {
+                        const y = getReturnY(tickValue, navReturnSummary);
+                        return (
+                          <g key={`nav-grid-${index}`}>
+                            <line
+                              x1={NAV_CHART_PADDING_X}
+                              x2={NAV_CHART_WIDTH - NAV_CHART_PADDING_X}
+                              y1={y}
+                              y2={y}
+                              stroke="rgba(148, 163, 184, 0.5)"
+                              strokeWidth="1"
+                            />
+                            <text
+                              x={NAV_CHART_PADDING_X - 6}
+                              y={y + 4}
+                              fontSize="10"
+                              textAnchor="end"
+                              fill="rgb(100 116 139)"
+                            >
+                              {formatSignedPercent(tickValue)}
+                            </text>
+                          </g>
+                        );
+                      })}
                       <polyline
                         fill="none"
                         stroke="rgb(37 99 235)"
@@ -1650,13 +1758,25 @@ export default function App() {
                         strokeLinecap="round"
                         points={navPolyline}
                       />
+                      {navDateTicks.map((tick) => (
+                        <text
+                          key={`nav-date-${tick.index}`}
+                          x={tick.x}
+                          y={NAV_CHART_HEIGHT - 6}
+                          fontSize="10"
+                          textAnchor="middle"
+                          fill="rgb(100 116 139)"
+                        >
+                          {tick.label}
+                        </text>
+                      ))}
                       {navHoverPoint ? (
                         <>
                           <line
                             x1={navHoverPoint.x}
                             x2={navHoverPoint.x}
-                            y1={NAV_CHART_PADDING}
-                            y2={NAV_CHART_HEIGHT - NAV_CHART_PADDING}
+                            y1={NAV_CHART_PADDING_Y}
+                            y2={NAV_CHART_HEIGHT - NAV_CHART_PADDING_Y}
                             stroke="rgba(37, 99, 235, 0.35)"
                             strokeWidth="1.5"
                           />
@@ -1672,22 +1792,22 @@ export default function App() {
                       ) : null}
                     </svg>
                   ) : (
-                    <div className="text-xs text-gray-500">暂无净值曲线数据。</div>
+                    <div className="text-xs text-gray-500">暂无收益率曲线数据。</div>
                   )}
                 </div>
                 {navPoints.length ? (
                   <div className="mt-2 text-xs text-slate-600">{navHoverLabel}</div>
                 ) : null}
                 <div className="mt-2 text-xs text-gray-500 flex items-center justify-between">
-                  <span>最低 {navSummary.min ? navSummary.min.toFixed(4) : "--"}</span>
-                  <span>最高 {navSummary.max ? navSummary.max.toFixed(4) : "--"}</span>
+                  <span>最低收益率 {navReturns.length ? formatSignedPercent(navReturnSummary.min) : "--"}</span>
+                  <span>最高收益率 {navReturns.length ? formatSignedPercent(navReturnSummary.max) : "--"}</span>
                 </div>
               </section>
 
               <section className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-bold text-gray-800">区间收益</h4>
-                  <span className="text-xs text-gray-500">按净值曲线首末点估算</span>
+                  <span className="text-xs text-gray-500">按收益率曲线首末点估算</span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-3">
                   {NAV_RANGE_OPTIONS.map((option) => {
