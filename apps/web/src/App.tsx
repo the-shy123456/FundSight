@@ -179,6 +179,14 @@ function resolveFundName(name?: string | null, nameDisplay?: string | null): str
   return (nameDisplay ?? name ?? "").trim();
 }
 
+function normalizeTheme(theme?: string | null): string {
+  const value = (theme ?? "").trim();
+  if (!value) return "";
+  // "均衡成长" is a fallback label from our heuristic, treat it as uncategorized.
+  if (value === "均衡成长") return "";
+  return value;
+}
+
 const NAV_CHART_WIDTH = 600;
 const NAV_CHART_HEIGHT = 180;
 const NAV_CHART_PADDING_X = 56;
@@ -593,6 +601,7 @@ export default function App() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogRelatedKeywords, setCatalogRelatedKeywords] = useState<string[]>([]);
+  const [catalogThemeFilter, setCatalogThemeFilter] = useState("");
   const [catalogItems, setCatalogItems] = useState<FundCatalogItem[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogPage, setCatalogPage] = useState(1);
@@ -643,6 +652,11 @@ export default function App() {
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
   const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
+  const catalogThemeFilterValue = catalogThemeFilter.trim();
+  const catalogVisibleItems = useMemo(() => {
+    if (!catalogThemeFilterValue) return catalogItems;
+    return catalogItems.filter((item) => normalizeTheme(item.theme) === catalogThemeFilterValue);
+  }, [catalogItems, catalogThemeFilterValue]);
   const watchlistIdSet = useMemo(() => new Set(watchlistItems.map((item) => item.fund_id)), [watchlistItems]);
   const watchlistIntradayMap = useMemo(() => {
     const map = new Map<string, WatchlistIntradayItem>();
@@ -690,7 +704,7 @@ export default function App() {
   }, [detailHoldings]);
   const relatedSectorChips = useMemo(() => {
     const chips: string[] = [];
-    const theme = (detailFund?.theme || "").trim();
+    const theme = normalizeTheme(detailFund?.theme);
     if (theme) chips.push(theme);
     relatedIndustries.forEach((industry) => {
       if (!chips.includes(industry)) chips.push(industry);
@@ -1167,7 +1181,10 @@ export default function App() {
     setActiveTab("library");
     setCatalogQuery(cleanKeyword);
     setCatalogPage(1);
-    setCatalogRelatedKeywords((current) => [cleanKeyword, ...current.filter((item) => item !== cleanKeyword)].slice(0, 8));
+    setCatalogThemeFilter("");
+    setCatalogRelatedKeywords((current) =>
+      cleanKeyword === "均衡成长" ? current : [cleanKeyword, ...current.filter((item) => item !== cleanKeyword)].slice(0, 8),
+    );
     setPageNotice(`已按关联筛选：${cleanKeyword}`);
     void loadCatalog({ query: cleanKeyword, page: 1, pageSize: catalogPageSize });
   }
@@ -1538,26 +1555,7 @@ export default function App() {
         {activeTab === "library" ? (
           <div className="h-full flex flex-col">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div className="flex items-start md:items-center justify-between gap-4">
-                <h2 className="text-lg font-bold text-gray-800">全市场基金库概览</h2>
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span className="hidden sm:inline">每页</span>
-                  <select
-                    value={catalogPageSize}
-                    onChange={(event) => {
-                      const next = Number(event.target.value) || 20;
-                      setCatalogPageSize(next);
-                      setCatalogPage(1);
-                      void loadCatalog({ query: catalogQuery, page: 1, pageSize: next });
-                    }}
-                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value={10}>10</option>
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                  </select>
-                </div>
-              </div>
+              <h2 className="text-lg font-bold text-gray-800">全市场基金库概览</h2>
               <div className="flex flex-col gap-2 w-full md:w-1/2">
                 <div className="flex gap-3">
                   <input
@@ -1618,9 +1616,26 @@ export default function App() {
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex-1 overflow-hidden">
-              {catalogItems.length ? (
+              {catalogVisibleItems.length ? (
                 <div className="h-full flex flex-col">
-                  <div className="px-5 py-3 border-b border-gray-100 text-sm text-gray-500">共找到 {catalogTotal} 只基金</div>
+                  <div className="px-5 py-3 border-b border-gray-100 text-sm text-gray-500 flex items-center justify-between gap-3">
+                    <span>
+                      共找到 {catalogThemeFilterValue ? `${catalogVisibleItems.length} / ${catalogTotal}` : catalogTotal} 只基金
+                      {catalogThemeFilterValue ? `（主题筛选：${catalogThemeFilterValue}）` : ""}
+                    </span>
+                    {catalogThemeFilterValue ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCatalogThemeFilter("");
+                          setPageNotice("已清除主题筛选。");
+                        }}
+                        className="text-xs text-gray-600 hover:text-gray-800 bg-gray-100 px-2.5 py-1 rounded"
+                      >
+                        清除主题筛选
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="overflow-auto flex-1">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
@@ -1633,20 +1648,25 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-100">
-                        {catalogItems.map((item) => (
+                        {catalogVisibleItems.map((item) => (
                           <tr key={item.fund_id}>
                             <td className="px-6 py-4">
                               <div className="text-sm font-medium text-gray-900">{resolveFundName(item.name, item.name_display) || item.name}</div>
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-600">
-                              {item.theme ? (
+                              {normalizeTheme(item.theme) ? (
                                 <button
                                   type="button"
-                                  onClick={() => openLibraryFilter(item.theme || "")}
+                                  onClick={() => {
+                                    const theme = normalizeTheme(item.theme);
+                                    if (!theme) return;
+                                    setCatalogThemeFilter(theme);
+                                    setPageNotice(`已在当前结果中按主题筛选：${theme}`);
+                                  }}
                                   className="px-2.5 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-medium"
                                 >
-                                  {item.theme}
+                                  {normalizeTheme(item.theme)}
                                 </button>
                               ) : (
                                 "--"
@@ -1674,7 +1694,22 @@ export default function App() {
                   </div>
                   <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between text-sm text-gray-500">
                     <span>第 {catalogPage} 页</span>
-                    <div className="space-x-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 hidden sm:inline">每页</span>
+                      <select
+                        value={catalogPageSize}
+                        onChange={(event) => {
+                          const next = Number(event.target.value) || 20;
+                          setCatalogPageSize(next);
+                          setCatalogPage(1);
+                          void loadCatalog({ query: catalogQuery, page: 1, pageSize: next });
+                        }}
+                        className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                      </select>
                       <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: Math.max(1, catalogPage - 1), pageSize: catalogPageSize })} className="px-3 py-1.5 rounded border border-gray-300 disabled:opacity-50" disabled={catalogPage <= 1 || catalogLoading}>上一页</button>
                       <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: catalogPage + 1, pageSize: catalogPageSize })} className="px-3 py-1.5 rounded border border-gray-300 disabled:opacity-50" disabled={catalogLoading || catalogItems.length < catalogPageSize}>下一页</button>
                     </div>
@@ -1730,9 +1765,9 @@ export default function App() {
                             <td className="px-6 py-4">
                               <div className="text-sm font-medium text-gray-900">{displayName}</div>
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
-                              {item.theme ? (
+                              {normalizeTheme(item.theme) ? (
                                 <div className="mt-2 flex flex-wrap gap-2">
-                                  <span className="px-2 py-0.5 rounded-full text-[10px] border border-blue-200 text-blue-700 bg-blue-50">{item.theme}</span>
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] border border-blue-200 text-blue-700 bg-blue-50">{normalizeTheme(item.theme)}</span>
                                 </div>
                               ) : null}
                             </td>
