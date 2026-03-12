@@ -14,8 +14,17 @@ import type {
 } from "../types";
 import { normalizeFundCode, parseNumber } from "./format";
 
+const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+
+function withApiBase(url: string): string {
+  if (!API_BASE) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("/")) return `${API_BASE}${url}`;
+  return `${API_BASE}/${url}`;
+}
+
 async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(withApiBase(url), {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
