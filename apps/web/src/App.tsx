@@ -633,6 +633,10 @@ export default function App() {
   const [detailNavLoading, setDetailNavLoading] = useState(false);
   const [detailHoldingsLoading, setDetailHoldingsLoading] = useState(false);
   const [detailNotice, setDetailNotice] = useState("");
+  const [detailHoldingEditOpen, setDetailHoldingEditOpen] = useState(false);
+  const [detailHoldingAmount, setDetailHoldingAmount] = useState("");
+  const [detailHoldingProfit, setDetailHoldingProfit] = useState("");
+  const [detailHoldingSaving, setDetailHoldingSaving] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
   const [themeName, setThemeName] = useState("");
   const [themeFunds, setThemeFunds] = useState<FundCatalogItem[]>([]);
@@ -714,6 +718,12 @@ export default function App() {
     return fromWatchlist ?? null;
   }, [positions, watchlistItems, detailFundId]);
   const detailInWatchlist = detailFundId ? watchlistIdSet.has(detailFundId) : false;
+  const detailIsHolding = useMemo(() => positions.some((item) => item.fund_id === detailFundId), [positions, detailFundId]);
+  const detailManualRow = useMemo(() => {
+    const code = normalizeFundCode(detailFundId);
+    if (!code) return null;
+    return manualRows.find((row) => normalizeFundCode(row.fundQuery) === code) ?? null;
+  }, [manualRows, detailFundId]);
   const detailHoldingsSorted = useMemo(() => {
     const items = detailHoldings?.items ?? [];
     return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
@@ -1191,6 +1201,9 @@ export default function App() {
     setDetailEstimate(null);
     setDetailIntervalReturns(null);
     setDetailNotice("");
+    setDetailHoldingEditOpen(false);
+    setDetailHoldingAmount("");
+    setDetailHoldingProfit("");
     void loadNavTrend(item.fund_id, "6m");
     void loadIntervalReturns(item.fund_id);
     void loadTopHoldings(item.fund_id);
@@ -1200,6 +1213,51 @@ export default function App() {
   function closeFundDetail() {
     setDetailOpen(false);
     setDetailNotice("");
+    setDetailHoldingEditOpen(false);
+    setDetailHoldingAmount("");
+    setDetailHoldingProfit("");
+  }
+
+  function beginDetailHoldingEdit() {
+    if (!detailFundId) return;
+    const fallbackAmount = parseNumber((detailFund as PortfolioPosition | null)?.current_value ?? (detailFund as PortfolioPosition | null)?.market_value);
+    const fallbackProfit = parseNumber((detailFund as PortfolioPosition | null)?.total_pnl ?? (detailFund as PortfolioPosition | null)?.total_profit);
+
+    setDetailHoldingAmount(detailManualRow?.amount || (fallbackAmount ? fallbackAmount.toFixed(2) : ""));
+    setDetailHoldingProfit(detailManualRow?.profit || (Number.isFinite(fallbackProfit) ? fallbackProfit.toFixed(2) : "0"));
+    setDetailHoldingEditOpen(true);
+  }
+
+  async function saveDetailHoldingEdit() {
+    const code = normalizeFundCode(detailFundId);
+    if (!code) {
+      setDetailNotice("基金代码无效，无法修改持仓。");
+      return;
+    }
+
+    setDetailHoldingSaving(true);
+    setDetailNotice("");
+
+    try {
+      const displayName = resolveFundName(detailFund?.name, detailFund?.name_display) || detailFund?.name || "";
+      const nextRow: ManualRow = {
+        fundQuery: code,
+        fundName: displayName,
+        amount: detailHoldingAmount,
+        profit: detailHoldingProfit,
+        status: "pending",
+        source: "manual",
+      };
+
+      const nextRows = mergeRows(manualRows, [nextRow]);
+      await syncRows(nextRows, "持仓已更新。", false);
+      setDetailNotice("持仓已更新。");
+      setDetailHoldingEditOpen(false);
+    } catch (error) {
+      setDetailNotice(error instanceof Error ? error.message : "持仓修改失败，请稍后重试。 ");
+    } finally {
+      setDetailHoldingSaving(false);
+    }
   }
 
   function openLibraryFilter(keyword: string) {
@@ -1943,25 +2001,93 @@ export default function App() {
                   <p className="text-xs text-gray-500 mt-1">收益率曲线覆盖从成立到现在，可切换不同区间。</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const displayName = resolveFundName(detailFund?.name, detailFund?.name_display) || detailFundId;
-                      if (detailInWatchlist) {
-                        void handleRemoveFromWatchlist(detailFundId, displayName);
-                      } else {
-                        void handleAddToWatchlist({ fund_id: detailFundId, name: detailFund?.name, name_display: detailFund?.name_display });
-                      }
-                    }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${detailInWatchlist ? "bg-gray-100 text-gray-700 border-gray-200" : "bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"}`}
-                  >
-                    {detailInWatchlist ? "移除自选" : "加入自选"}
-                  </button>
-                  <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700">
-                    <X className="h-5 w-5" />
+                  <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700 p-1 rounded" aria-label="关闭详情">
+                    <X className="h-4 w-4" />
                   </button>
                 </div>
               </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const displayName = resolveFundName(detailFund?.name, detailFund?.name_display) || detailFundId;
+                    if (detailInWatchlist) {
+                      void handleRemoveFromWatchlist(detailFundId, displayName);
+                    } else {
+                      void handleAddToWatchlist({ fund_id: detailFundId, name: detailFund?.name, name_display: detailFund?.name_display });
+                    }
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium border ${detailInWatchlist ? "bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200" : "bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"}`}
+                >
+                  {detailInWatchlist ? "移除自选" : "加入自选"}
+                </button>
+
+                {detailIsHolding ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (detailHoldingEditOpen) {
+                        setDetailHoldingEditOpen(false);
+                        return;
+                      }
+                      beginDetailHoldingEdit();
+                    }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
+                  >
+                    {detailHoldingEditOpen ? "收起持仓" : "修改持仓"}
+                  </button>
+                ) : null}
+              </div>
+
+              {detailHoldingEditOpen ? (
+                <div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <div className="text-[11px] text-gray-500 mb-1">持仓金额 (元)</div>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        value={detailHoldingAmount}
+                        onChange={(event) => setDetailHoldingAmount(event.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-gray-200 rounded-md text-xs bg-gray-50 focus:bg-white focus:border-blue-500 outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <div className="text-[11px] text-gray-500 mb-1">持有收益 (元)</div>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        value={detailHoldingProfit}
+                        onChange={(event) => setDetailHoldingProfit(event.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-gray-200 rounded-md text-xs bg-gray-50 focus:bg-white focus:border-blue-500 outline-none"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-2 text-[11px] text-gray-500">系统会自动反推份额与成本净值（用于盘中估算）。</div>
+                  <div className="mt-3 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDetailHoldingEditOpen(false)}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                      disabled={detailHoldingSaving}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveDetailHoldingEdit()}
+                      className="px-3 py-1 rounded-md text-[11px] font-medium border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                      disabled={detailHoldingSaving}
+                    >
+                      {detailHoldingSaving ? "保存中..." : "保存"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               {detailNotice ? <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{detailNotice}</div> : null}
             </div>
 
@@ -1980,7 +2106,7 @@ export default function App() {
                         setDetailRange(option.value);
                         void loadNavTrend(detailFundId, option.value);
                       }}
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium border ${detailRange === option.value ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"}`}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-medium border ${detailRange === option.value ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"}`}
                     >
                       {option.label}
                     </button>
