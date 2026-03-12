@@ -30,6 +30,8 @@ import {
   requestPortfolioIntraday,
   requestWatchlist,
   requestWatchlistIntraday,
+  requestLlmConfig,
+  saveLlmConfig,
 } from "./lib/api";
 import {
   formatCurrency,
@@ -645,6 +647,15 @@ export default function App() {
   const [themeNotice, setThemeNotice] = useState("");
   const [aiConfigs, setAiConfigs] = useState<AiConfig[]>(initialConfigs);
   const [estimateMode, setEstimateMode] = useState<EstimateMode>(restoreEstimateMode());
+
+  const [llmConfigSupported, setLlmConfigSupported] = useState<boolean | null>(null);
+  const [llmConfigLoading, setLlmConfigLoading] = useState(false);
+  const [llmConfigNotice, setLlmConfigNotice] = useState("");
+  const [llmProtocol, setLlmProtocol] = useState<"openai_compatible" | "anthropic_messages">("openai_compatible");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [llmModel, setLlmModel] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmHasKey, setLlmHasKey] = useState(false);
   const [configForm, setConfigForm] = useState<ConfigFormState>(() =>
     formFromConfig(initialConfigs.find((item) => item.active) || initialConfigs[0] || null),
   );
@@ -865,6 +876,37 @@ export default function App() {
       void loadCatalog({ query: "", page: 1, pageSize: catalogPageSize });
     }
   }, [activeTab, catalogLoaded, catalogPageSize]);
+
+  useEffect(() => {
+    if (activeTab !== "config") return;
+    let cancelled = false;
+
+    async function loadDesktopConfig() {
+      setLlmConfigNotice("");
+      setLlmConfigLoading(true);
+      try {
+        const payload = await requestLlmConfig();
+        if (cancelled) return;
+        setLlmConfigSupported(true);
+        setLlmProtocol(payload.protocol);
+        setLlmBaseUrl(payload.base_url);
+        setLlmModel(payload.model);
+        setLlmHasKey(Boolean(payload.has_api_key));
+        setLlmApiKey("");
+      } catch {
+        if (cancelled) return;
+        setLlmConfigSupported(false);
+      } finally {
+        if (!cancelled) setLlmConfigLoading(false);
+      }
+    }
+
+    void loadDesktopConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab !== "watchlist") return;
@@ -1444,6 +1486,26 @@ export default function App() {
     }
   }
 
+  async function saveDesktopLlmConfig() {
+    setLlmConfigNotice("");
+    setLlmConfigLoading(true);
+    try {
+      const payload = await saveLlmConfig({
+        protocol: llmProtocol,
+        base_url: llmBaseUrl.trim(),
+        model: llmModel.trim(),
+        api_key: llmApiKey.trim() || undefined,
+      });
+      setLlmHasKey(Boolean(payload.has_api_key));
+      setLlmApiKey("");
+      setLlmConfigNotice("已保存。\n提示：AI 分析会优先走流式接口，确保配置生效。");
+    } catch (error) {
+      setLlmConfigNotice(error instanceof Error ? error.message : "保存失败，请稍后重试。 ");
+    } finally {
+      setLlmConfigLoading(false);
+    }
+  }
+
   function saveConfig() {
     const name = configForm.name.trim();
     const endpoint = configForm.endpoint.trim();
@@ -1974,41 +2036,119 @@ export default function App() {
                 <div className="bg-blue-50 text-blue-600 p-3 rounded-lg mr-4 border border-blue-100"><BrainCircuit className="h-5 w-5" /></div>
                 <div>
                   <h2 className="text-xl font-bold text-gray-800">AI Agent 大模型配置</h2>
-                  <p className="text-sm text-gray-500 mt-1">配置您自己的 LLM API，全面兼容 OpenAI 接口规范。</p>
+                  <p className="text-sm text-gray-500 mt-1">桌面端支持协议/地址/API Key/模型的完整配置，并用于流式 AI 分析。</p>
                 </div>
               </div>
-              {configNotice ? <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">{configNotice}</div> : null}
-              {aiConfigs.length ? (
-                <div className="mb-4">
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">已保存配置</label>
-                  <select value={activeConfig?.id || ""} onChange={(event) => {
-                    const selected = aiConfigs.find((item) => item.id === event.target.value);
-                    if (!selected) return;
-                    setAiConfigs((current) => current.map((item) => ({ ...item, active: item.id === selected.id })));
-                    setConfigNotice(`已切换到 ${selected.name}。`);
-                  }} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50">
-                    {aiConfigs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
+
+              {llmConfigSupported === null ? (
+                <div className="text-sm text-gray-500">正在检测桌面端配置能力...</div>
+              ) : llmConfigSupported ? (
+                <div className="space-y-5">
+                  {llmConfigNotice ? <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700 whitespace-pre-line">{llmConfigNotice}</div> : null}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">接口协议</label>
+                    <select
+                      value={llmProtocol}
+                      onChange={(event) => setLlmProtocol(event.target.value as "openai_compatible" | "anthropic_messages")}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50"
+                      disabled={llmConfigLoading}
+                    >
+                      <option value="openai_compatible">OpenAI Compatible（中转站/网关）</option>
+                      <option value="anthropic_messages">Anthropic Messages（Claude）</option>
+                    </select>
+                    {llmProtocol === "anthropic_messages" ? (
+                      <div className="mt-1 text-xs text-amber-600">提示：Anthropic 协议流式接入正在补齐中；你现在可先用 OpenAI Compatible。</div>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">接入地址（Base URL）</label>
+                    <input
+                      type="text"
+                      value={llmBaseUrl}
+                      onChange={(event) => setLlmBaseUrl(event.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                      placeholder="例如：https://api.openai.com 或你的中转站地址"
+                      disabled={llmConfigLoading}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">模型</label>
+                    <input
+                      type="text"
+                      value={llmModel}
+                      onChange={(event) => setLlmModel(event.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                      placeholder="例如：gpt-4.1 / gpt-4o-mini / claude-3-7-sonnet"
+                      disabled={llmConfigLoading}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
+                    <input
+                      type="password"
+                      value={llmApiKey}
+                      onChange={(event) => setLlmApiKey(event.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                      placeholder={llmHasKey ? "已保存（留空表示不修改）" : "sk-..."}
+                      disabled={llmConfigLoading}
+                    />
+                    {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已安全保存到系统凭据中（输入一次即可）。</div> : null}
+                  </div>
+
+                  <div className="pt-4 flex justify-end border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => void saveDesktopLlmConfig()}
+                      className="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold disabled:opacity-60"
+                      disabled={llmConfigLoading}
+                    >
+                      {llmConfigLoading ? "保存中..." : "保存配置"}
+                    </button>
+                  </div>
                 </div>
-              ) : null}
-              <div className="space-y-5">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">配置名称</label>
-                  <input type="text" value={configForm.name} onChange={(event) => setConfigForm((current) => ({ ...current, name: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50" placeholder="例如：OpenAI 主配置" />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">接口 Base URL</label>
-                  <input type="text" value={configForm.endpoint} onChange={(event) => setConfigForm((current) => ({ ...current, endpoint: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
-                  <input type="password" value={configForm.apiKey} onChange={(event) => setConfigForm((current) => ({ ...current, apiKey: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" placeholder="sk-..." />
-                </div>
-                <div className="pt-4 flex justify-between border-t border-gray-100">
-                  <button type="button" onClick={() => setConfigNotice(activeConfig ? `当前启用：${activeConfig.name}` : "暂无可用配置") } className="text-sm font-medium text-gray-600 border border-gray-300 px-5 py-2 rounded-lg">测试</button>
-                  <button type="button" onClick={saveConfig} className="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold">保存配置</button>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="mb-4 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                    当前后端未暴露桌面端 LLM 配置接口（/api/v1/llm/config）。此页面将使用原有的 Web 端本地配置占位。
+                  </div>
+
+                  {configNotice ? <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">{configNotice}</div> : null}
+                  {aiConfigs.length ? (
+                    <div className="mb-4">
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">已保存配置</label>
+                      <select value={activeConfig?.id || ""} onChange={(event) => {
+                        const selected = aiConfigs.find((item) => item.id === event.target.value);
+                        if (!selected) return;
+                        setAiConfigs((current) => current.map((item) => ({ ...item, active: item.id === selected.id })));
+                        setConfigNotice(`已切换到 ${selected.name}。`);
+                      }} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50">
+                        {aiConfigs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </div>
+                  ) : null}
+                  <div className="space-y-5">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">配置名称</label>
+                      <input type="text" value={configForm.name} onChange={(event) => setConfigForm((current) => ({ ...current, name: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50" placeholder="例如：OpenAI 主配置" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">接口 Base URL</label>
+                      <input type="text" value={configForm.endpoint} onChange={(event) => setConfigForm((current) => ({ ...current, endpoint: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
+                      <input type="password" value={configForm.apiKey} onChange={(event) => setConfigForm((current) => ({ ...current, apiKey: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" placeholder="sk-..." />
+                    </div>
+                    <div className="pt-4 flex justify-between border-t border-gray-100">
+                      <button type="button" onClick={() => setConfigNotice(activeConfig ? `当前启用：${activeConfig.name}` : "暂无可用配置") } className="text-sm font-medium text-gray-600 border border-gray-300 px-5 py-2 rounded-lg">测试</button>
+                      <button type="button" onClick={saveConfig} className="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold">保存配置</button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ) : null}

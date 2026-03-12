@@ -191,6 +191,31 @@ export async function requestAssistant(payload: {
   });
 }
 
+export type LlmProtocol = "openai_compatible" | "anthropic_messages";
+
+export type LlmConfigView = {
+  protocol: LlmProtocol;
+  base_url: string;
+  model: string;
+  has_api_key: boolean;
+};
+
+export async function requestLlmConfig(): Promise<LlmConfigView> {
+  return fetchJson<LlmConfigView>("/api/v1/llm/config");
+}
+
+export async function saveLlmConfig(payload: {
+  protocol: LlmProtocol;
+  base_url: string;
+  model: string;
+  api_key?: string;
+}): Promise<LlmConfigView> {
+  return fetchJson<LlmConfigView>("/api/v1/llm/config", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function requestAssistantStream(
   payload: {
     fundId?: string;

@@ -95,7 +95,8 @@ fn save_llm_config(path: &FsPath, config: &LlmConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
     }
-    let content = serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
+    let content =
+        serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
     std::fs::write(path, content).map_err(|e| format!("写入配置失败: {e}"))?;
     Ok(())
 }
@@ -153,10 +154,16 @@ async fn update_llm_config(
         )
             .into_response();
     }
-    if let Err(message) = set_api_key(&payload.api_key) {
+
+    // API Key: allow empty to keep existing stored key.
+    if !payload.api_key.trim().is_empty() {
+        if let Err(message) = set_api_key(&payload.api_key) {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
+        }
+    } else if !has_api_key() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "message": message })),
+            Json(json!({ "message": "API Key 不能为空" })),
         )
             .into_response();
     }
@@ -180,10 +187,10 @@ async fn update_llm_config(
     (
         StatusCode::OK,
         Json(json!({
-            "ok": true,
             "protocol": next.protocol,
             "base_url": next.base_url,
             "model": next.model,
+            "has_api_key": has_api_key(),
         })),
     )
         .into_response()
@@ -300,11 +307,7 @@ async fn assistant_ask_stream(
     let api_key = match get_api_key() {
         Ok(value) => value,
         Err(message) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "message": message })),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
         }
     };
 
@@ -324,7 +327,9 @@ async fn assistant_ask_stream(
             LlmProtocol::Openai_compatible => {
                 openai_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
             }
-            LlmProtocol::Anthropic_messages => Err("Anthropic 协议暂未实现（下一迭代补）".to_string()),
+            LlmProtocol::Anthropic_messages => {
+                Err("Anthropic 协议暂未实现（下一迭代补）".to_string())
+            }
         };
 
         match result {
@@ -344,13 +349,17 @@ async fn assistant_ask_stream(
                         }
                     }
                 }
-                let _ = tx.send(Ok(Event::default().event("done").data("done"))).await;
+                let _ = tx
+                    .send(Ok(Event::default().event("done").data("done")))
+                    .await;
             }
             Err(message) => {
                 let _ = tx
                     .send(Ok(Event::default().event("error").data(message)))
                     .await;
-                let _ = tx.send(Ok(Event::default().event("done").data("done"))).await;
+                let _ = tx
+                    .send(Ok(Event::default().event("done").data("done")))
+                    .await;
             }
         }
     });
@@ -364,20 +373,52 @@ async fn assistant_ask_stream(
         .into_response()
 }
 
-async fn assistant_ask(State(_state): State<Arc<AppState>>, Json(_payload): Json<AssistantAskPayload>) -> impl IntoResponse {
-    // For now, the desktop app prefers streaming.
-    Json(json!({
-        "summary": "该端点仅用于兼容；请使用 /api/v1/assistant/ask/stream 流式接口。",
-    }))
+async fn assistant_ask(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AssistantAskPayload>,
+) -> impl IntoResponse {
+    // Compatibility: keep the existing structured assistant available via the Python upstream.
+    let url = format!("{PYTHON_UPSTREAM}/api/v1/assistant/ask");
+    let resp = state
+        .http
+        .post(url)
+        .json(&json!({
+            "fund_id": payload.fund_id,
+            "cash_available": payload.cash_available,
+            "question": payload.question,
+            "estimate_mode": payload.estimate_mode,
+        }))
+        .send()
+        .await;
+
+    let resp = match resp {
+        Ok(v) => v,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "message": format!("上游服务不可用: {error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    (
+        status,
+        [(
+            header::CONTENT_TYPE,
+            "application/json; charset=utf-8".to_string(),
+        )],
+        text,
+    )
+        .into_response()
 }
 
 async fn proxy_to_python(State(state): State<Arc<AppState>>, mut req: Request<Body>) -> Response {
     // Only proxy /api/v1/*
     let uri = req.uri().clone();
-    let path_and_query = uri
-        .path_and_query()
-        .map(|v| v.as_str())
-        .unwrap_or("/");
+    let path_and_query = uri.path_and_query().map(|v| v.as_str()).unwrap_or("/");
 
     if !path_and_query.starts_with("/api/") {
         return (StatusCode::NOT_FOUND, "Not found").into_response();
@@ -470,7 +511,10 @@ fn spawn_api_server() {
 
         let app = Router::new()
             .route("/api/v1/health", get(health))
-            .route("/api/v1/llm/config", get(get_llm_config).post(update_llm_config))
+            .route(
+                "/api/v1/llm/config",
+                get(get_llm_config).post(update_llm_config),
+            )
             .route("/api/v1/assistant/ask", post(assistant_ask))
             .route("/api/v1/assistant/ask/stream", post(assistant_ask_stream))
             .route("/api/v1/{*path}", any(proxy_to_python))
