@@ -216,6 +216,15 @@ fn openai_endpoint(base_url: &str) -> String {
     }
 }
 
+fn anthropic_endpoint(base_url: &str) -> String {
+    let root = normalize_base_url(base_url);
+    if root.ends_with("/v1") {
+        format!("{root}/messages")
+    } else {
+        format!("{root}/v1/messages")
+    }
+}
+
 async fn openai_stream(
     client: reqwest::Client,
     base_url: String,
@@ -291,6 +300,96 @@ async fn openai_stream(
     Ok(parsed)
 }
 
+async fn anthropic_stream(
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    prompt: String,
+) -> Result<impl Stream<Item = Result<String, String>>, String> {
+    let url = anthropic_endpoint(&base_url);
+    let body = json!({
+        "model": model,
+        "stream": true,
+        "max_tokens": 1024,
+        "system": "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    });
+
+    let resp = client
+        .post(url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header(header::CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let stream = resp.bytes_stream();
+
+    let parsed = async_stream::try_stream! {
+        let mut buffer = String::new();
+        futures::pin_mut!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("读取流失败: {e}"))?;
+            let part = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&part);
+
+            while let Some(idx) = buffer.find("\n\n") {
+                let raw = buffer[..idx].to_string();
+                buffer = buffer[idx + 2..].to_string();
+
+                let mut event_name = String::new();
+                let mut data_lines: Vec<String> = vec![];
+
+                for line in raw.lines() {
+                    let line = line.trim();
+                    if line.starts_with("event:") {
+                        event_name = line.trim_start_matches("event:").trim().to_string();
+                    } else if line.starts_with("data:") {
+                        data_lines.push(line.trim_start_matches("data:").trim().to_string());
+                    }
+                }
+
+                let data = data_lines.join("\n");
+                if event_name == "content_block_delta" {
+                    let value: serde_json::Value = serde_json::from_str(&data).unwrap_or(json!({}));
+                    let text = value
+                        .get("delta")
+                        .and_then(|v| v.get("text"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !text.is_empty() {
+                        yield text.to_string();
+                    }
+                } else if event_name == "message_stop" {
+                    return;
+                } else if event_name == "error" {
+                    let value: serde_json::Value = serde_json::from_str(&data).unwrap_or(json!({}));
+                    let message = value
+                        .get("error")
+                        .and_then(|v| v.get("message"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(data.as_str());
+                    Err::<(), _>(message.to_string())?;
+                }
+            }
+        }
+    };
+
+    Ok(parsed)
+}
+
 async fn assistant_ask_stream(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AssistantAskPayload>,
@@ -328,7 +427,7 @@ async fn assistant_ask_stream(
                 openai_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
             }
             LlmProtocol::Anthropic_messages => {
-                Err("Anthropic 协议暂未实现（下一迭代补）".to_string())
+                anthropic_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
             }
         };
 

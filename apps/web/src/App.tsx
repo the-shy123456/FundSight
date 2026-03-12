@@ -2057,7 +2057,7 @@ export default function App() {
                       <option value="anthropic_messages">Anthropic Messages（Claude）</option>
                     </select>
                     {llmProtocol === "anthropic_messages" ? (
-                      <div className="mt-1 text-xs text-amber-600">提示：Anthropic 协议流式接入正在补齐中；你现在可先用 OpenAI Compatible。</div>
+                      <div className="mt-1 text-xs text-gray-500">提示：Anthropic 协议需要 Base URL 指向 Anthropic（或兼容其 /v1/messages 的网关）。</div>
                     ) : null}
                   </div>
 
