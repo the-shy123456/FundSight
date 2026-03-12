@@ -1,0 +1,12 @@
+[net]
+retry = 10
+git-fetch-with-cli = true
+
+[registries.crates-io]
+protocol = "sparse"
+
+[source.crates-io]
+replace-with = "rsproxy"
+
+[source.rsproxy]
+registry = "sparse+https://rsproxy.cn/index/"
