@@ -45,10 +45,12 @@ import {
   restoreAiConfigs,
   restoreAssistantQuestion,
   restoreEstimateMode,
+  restoreHoldingFirstSeenAt,
   restoreManualRows,
   saveAiConfigs,
   saveAssistantQuestion,
   saveEstimateMode,
+  saveHoldingFirstSeenAt,
   saveManualRows,
 } from "./lib/storage";
 import type {
@@ -616,6 +618,8 @@ export default function App() {
   const [question, setQuestion] = useState(restoreAssistantQuestion());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [holdingFirstSeenAtMap, setHoldingFirstSeenAtMap] = useState<Record<string, number>>(() => restoreHoldingFirstSeenAt());
   const [activeFundId, setActiveFundId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailFundId, setDetailFundId] = useState("");
@@ -652,6 +656,32 @@ export default function App() {
   const positions = snapshot?.positions ?? [];
   const summary = snapshot?.summary;
   const dataQuality = summary?.data_quality ?? snapshot?.data_quality;
+
+  useEffect(() => {
+    if (!positions.length) return;
+    setHoldingFirstSeenAtMap((current) => {
+      const now = Date.now();
+      let changed = false;
+      const next = { ...current };
+
+      for (const item of positions) {
+        const fundId = item.fund_id;
+        if (!fundId) continue;
+        const existing = next[fundId];
+        if (typeof existing !== "number" || !Number.isFinite(existing) || existing <= 0) {
+          next[fundId] = now;
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [positions]);
+
+  useEffect(() => {
+    saveHoldingFirstSeenAt(holdingFirstSeenAtMap);
+  }, [holdingFirstSeenAtMap]);
+
   const catalogThemeFilterValue = catalogThemeFilter.trim();
   const catalogVisibleItems = useMemo(() => {
     if (!catalogThemeFilterValue) return catalogItems;
@@ -1348,6 +1378,15 @@ export default function App() {
     setConfigNotice(configForm.id ? "配置已更新。" : "配置已保存。");
   }
 
+  const holdingDaysNow = Date.now();
+
+  function holdingDaysText(fundId: string): string {
+    const firstSeenAt = holdingFirstSeenAtMap[fundId];
+    if (!firstSeenAt) return "--";
+    const days = Math.max(1, Math.floor((holdingDaysNow - firstSeenAt) / 86_400_000) + 1);
+    return `${days}天`;
+  }
+
   return (
     <div className="bg-gray-50 text-gray-800 h-screen flex flex-col overflow-hidden relative">
       <nav className="bg-white shadow-sm border-b border-gray-200 z-10 flex-shrink-0">
@@ -1417,8 +1456,8 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-[500px]">
-              <div className="w-full md:w-3/4 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
+            <div className="flex flex-col gap-6 flex-1 min-h-[500px]">
+              <div className="w-full bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
                   <div className="flex flex-col">
                     <h2 className="text-lg font-bold text-gray-800">持仓明细</h2>
@@ -1433,7 +1472,10 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void ask()}
+                      onClick={() => {
+                        setAssistantOpen(true);
+                        void ask();
+                      }}
                       className="bg-purple-50 text-purple-700 border border-purple-200 px-2.5 py-1 rounded-lg text-xs hover:bg-purple-100 transition-all font-medium inline-flex items-center"
                       disabled={assistantLoading}
                     >
@@ -1459,6 +1501,8 @@ export default function App() {
                         <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">持仓金额</th>
                         <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">实时估值</th>
                         <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">今日估算收益</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">持有收益</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="按首次导入日期计算">持有天数</th>
                         <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
                       </tr>
                     </thead>
@@ -1477,6 +1521,8 @@ export default function App() {
                           <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">{formatPlainAmount(item.current_value ?? item.market_value)}</td>
                           <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.today_estimated_return ?? item.today_return)}`}>{formatSignedPercent(item.today_estimated_return ?? item.today_return)}</td>
                           <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.today_estimated_pnl ?? item.today_profit)}`}>{formatSignedCurrency(item.today_estimated_pnl ?? item.today_profit).replace("¥", "")}</td>
+                          <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.total_pnl ?? item.total_profit)}`}>{formatSignedCurrency(item.total_pnl ?? item.total_profit).replace("¥", "")}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-700 font-medium">{holdingDaysText(item.fund_id)}</td>
                           <td className="px-6 py-4 whitespace-nowrap text-center">
                             <div className="inline-flex items-center gap-2">
                               <button
@@ -1489,7 +1535,10 @@ export default function App() {
                               <button
                                 type="button"
                                 className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-0.5 rounded text-xs font-medium"
-                                onClick={() => void ask(buildAnalysisQuestion(item), item.fund_id)}
+                                onClick={() => {
+                                  setAssistantOpen(true);
+                                  void ask(buildAnalysisQuestion(item), item.fund_id);
+                                }}
                               >
                                 AI分析
                               </button>
@@ -1498,67 +1547,79 @@ export default function App() {
                         </tr>
                       )) : (
                         <tr>
-                          <td className="px-6 py-10 text-center text-sm text-gray-400" colSpan={5}>还没有持仓数据，先点击“导入持仓”。</td>
+                          <td className="px-6 py-10 text-center text-sm text-gray-400" colSpan={7}>还没有持仓数据，先点击“导入持仓”。</td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
+            </div>
 
-              <div className="w-full md:w-1/4 bg-white rounded-xl shadow-sm border border-indigo-100 flex flex-col overflow-hidden relative">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500"></div>
-                <div className="p-4 border-b border-gray-100 flex items-center bg-indigo-50/30">
-                  <div className="bg-gradient-to-br from-blue-500 to-purple-600 text-white p-2 rounded-lg mr-3 shadow-sm"><BrainCircuit className="h-4 w-4" /></div>
-                  <div>
-                    <h2 className="text-md font-bold text-gray-800">金融分析 Agent</h2>
-                    <p className="text-[11px] text-gray-500 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-green-500 mr-1 animate-pulse"></span>联网与深度投研</p>
-                  </div>
-                </div>
+            {assistantOpen ? (
+              <>
+                <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setAssistantOpen(false)} />
+                <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[420px] md:w-[460px] lg:w-[480px]" role="dialog" aria-modal="true" aria-label="AI 助手">
+                  <div className="h-full bg-white shadow-2xl border-l border-indigo-100 flex flex-col overflow-hidden relative">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500"></div>
+                    <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-indigo-50/30">
+                      <div className="flex items-center">
+                        <div className="bg-gradient-to-br from-blue-500 to-purple-600 text-white p-2 rounded-lg mr-3 shadow-sm"><BrainCircuit className="h-4 w-4" /></div>
+                        <div>
+                          <h2 className="text-md font-bold text-gray-800">金融分析 Agent</h2>
+                          <p className="text-[11px] text-gray-500 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-green-500 mr-1 animate-pulse"></span>联网与深度投研</p>
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => setAssistantOpen(false)} className="text-gray-500 hover:text-gray-800 p-1 rounded" aria-label="关闭">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
 
-                <div className="flex-1 p-4 overflow-y-auto no-scrollbar flex flex-col space-y-4 bg-gray-50/50">
-                  {chatMessages.map((message) => (
-                    <div key={message.id} className={message.role === "user" ? "flex items-end justify-end" : "flex items-start"}>
-                      <div className={message.role === "user" ? "bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%] whitespace-pre-line" : "bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed"}>
-                        <div className="whitespace-pre-line">{message.text}</div>
-                        {message.role === "assistant" && message.announcements ? (
-                          <AnnouncementCard title={ANNOUNCEMENT_EVIDENCE_LABEL} items={message.announcements} />
-                        ) : null}
-                        {message.role === "assistant" && message.perFundAnnouncements?.length ? (
-                          <div className="mt-3 space-y-2">
-                            {message.perFundAnnouncements.map((item) => (
-                              <AnnouncementCard key={`${item.fund_id}-announcement`} title={`${item.name} · ${ANNOUNCEMENT_EVIDENCE_LABEL}`} items={item.items} />
-                            ))}
+                    <div className="flex-1 p-4 overflow-y-auto no-scrollbar flex flex-col space-y-4 bg-gray-50/50">
+                      {chatMessages.map((message) => (
+                        <div key={message.id} className={message.role === "user" ? "flex items-end justify-end" : "flex items-start"}>
+                          <div className={message.role === "user" ? "bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%] whitespace-pre-line" : "bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed"}>
+                            <div className="whitespace-pre-line">{message.text}</div>
+                            {message.role === "assistant" && message.announcements ? (
+                              <AnnouncementCard title={ANNOUNCEMENT_EVIDENCE_LABEL} items={message.announcements} />
+                            ) : null}
+                            {message.role === "assistant" && message.perFundAnnouncements?.length ? (
+                              <div className="mt-3 space-y-2">
+                                {message.perFundAnnouncements.map((item) => (
+                                  <AnnouncementCard key={`${item.fund_id}-announcement`} title={`${item.name} · ${ANNOUNCEMENT_EVIDENCE_LABEL}`} items={item.items} />
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
-                        ) : null}
+                        </div>
+                      ))}
+                      {assistantLoading ? <div className="flex items-start"><div className="bg-white border border-gray-200 text-gray-500 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm flex items-center"><LoaderCircle className="h-4 w-4 animate-spin text-blue-500 mr-2" />大模型思考中...</div></div> : null}
+                    </div>
+
+                    <div className="p-3 bg-white border-t border-gray-100">
+                      <div className="relative flex items-center">
+                        <input
+                          type="text"
+                          value={question}
+                          onChange={(event) => setQuestion(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void ask();
+                            }
+                          }}
+                          className="w-full bg-gray-100 border border-transparent rounded-full py-2.5 pl-4 pr-12 text-sm focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                          placeholder="提问..."
+                        />
+                        <button type="button" onClick={() => void ask()} className="absolute right-1.5 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700">
+                          <SendHorizontal className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
-                  ))}
-                  {assistantLoading ? <div className="flex items-start"><div className="bg-white border border-gray-200 text-gray-500 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm flex items-center"><LoaderCircle className="h-4 w-4 animate-spin text-blue-500 mr-2" />大模型思考中...</div></div> : null}
-                </div>
-
-                <div className="p-3 bg-white border-t border-gray-100">
-                  <div className="relative flex items-center">
-                    <input
-                      type="text"
-                      value={question}
-                      onChange={(event) => setQuestion(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void ask();
-                        }
-                      }}
-                      className="w-full bg-gray-100 border border-transparent rounded-full py-2.5 pl-4 pr-12 text-sm focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none"
-                      placeholder="提问..."
-                    />
-                    <button type="button" onClick={() => void ask()} className="absolute right-1.5 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700">
-                      <SendHorizontal className="h-4 w-4" />
-                    </button>
                   </div>
                 </div>
-              </div>
-            </div>
+              </>
+            ) : null}
           </div>
         ) : null}
 

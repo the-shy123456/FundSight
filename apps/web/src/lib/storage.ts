@@ -6,6 +6,7 @@ export const STORAGE_KEYS = {
   assistantSession: "fund-workbench-assistant-session",
   aiConfigs: "fund-workbench-ai-configs",
   estimateMode: "estimate_mode",
+  holdingFirstSeenAt: "fund-workbench-holding-first-seen-at",
 } as const;
 
 export const DEFAULT_ROWS: ManualRow[] = [
@@ -114,4 +115,28 @@ export function restoreEstimateMode(): "auto" | "official" | "penetration" {
 
 export function saveEstimateMode(value: "auto" | "official" | "penetration"): void {
   localStorage.setItem(STORAGE_KEYS.estimateMode, value);
+}
+
+export function restoreHoldingFirstSeenAt(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.holdingFirstSeenAt);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const result: Record<string, number> = {};
+    for (const [fundId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const timestamp = Number(value);
+      if (!fundId) continue;
+      if (!Number.isFinite(timestamp) || timestamp <= 0) continue;
+      result[fundId] = timestamp;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function saveHoldingFirstSeenAt(value: Record<string, number>): void {
+  localStorage.setItem(STORAGE_KEYS.holdingFirstSeenAt, JSON.stringify(value));
 }
