@@ -23,6 +23,7 @@ directories = "6"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 urlencoding = "2"
+regex = "1"
 
 [lib]
 path = "src/lib.rs"

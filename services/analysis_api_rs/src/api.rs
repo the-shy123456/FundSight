@@ -1,4 +1,4 @@
-use crate::{funds, holdings, portfolio, real_data, watchlist};
+use crate::{funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -35,6 +35,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/watchlist/{fund_id}", delete(delete_watchlist_id))
         .route("/api/v1/funds", get(get_funds_catalog))
         .route("/api/v1/funds/search", get(get_funds_search))
+        .route("/api/v1/funds/{fund_id}/nav-trend", get(get_nav_trend))
+        .route("/api/v1/funds/{fund_id}/top-holdings", get(get_top_holdings))
         .route(
             "/api/v1/funds/{fund_id}/intraday-estimate",
             get(get_intraday_estimate),
@@ -234,8 +236,14 @@ async fn get_intraday_estimate(
 ) -> impl IntoResponse {
     match real_data::fetch_fund_estimate(&state.http, &fund_id).await {
         Ok(estimate) => {
-            let estimated_nav = estimate.get("estimated_nav").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let latest_nav = estimate.get("latest_nav").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let estimated_nav = estimate
+                .get("estimated_nav")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let latest_nav = estimate
+                .get("latest_nav")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             let payload = json!({
                 "estimated_nav": estimated_nav,
                 "latest_nav": latest_nav,
@@ -245,6 +253,64 @@ async fn get_intraday_estimate(
             });
             (StatusCode::OK, Json(payload)).into_response()
         }
-        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "message": error.to_string() }))).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NavTrendQuery {
+    range: Option<String>,
+}
+
+async fn get_nav_trend(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<String>,
+    Query(query): Query<NavTrendQuery>,
+) -> impl IntoResponse {
+    let range = nav::NavRange::from_str(query.range.as_deref().unwrap_or("6m"));
+
+    match nav::fetch_nav_trend_points(&state.http, &fund_id).await {
+        Ok(points) => {
+            let points = nav::filter_points_by_range(points, range);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "fund_id": fund_id,
+                    "range": range.as_str(),
+                    "points": points,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TopHoldingsQuery {
+    limit: Option<usize>,
+}
+
+async fn get_top_holdings(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<String>,
+    Query(query): Query<TopHoldingsQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(10).clamp(1, 50);
+    match top_holdings::fetch_top_holdings_with_quotes(&state.http, &fund_id, limit).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
     }
 }

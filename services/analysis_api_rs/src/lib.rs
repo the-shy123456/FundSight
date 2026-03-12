@@ -1,7 +1,10 @@
 pub mod api;
 pub mod funds;
 pub mod holdings;
+pub mod html;
+pub mod nav;
 pub mod portfolio;
 pub mod real_data;
 pub mod storage;
+pub mod top_holdings;
 pub mod watchlist;
