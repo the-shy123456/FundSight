@@ -21,7 +21,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{Any, CorsLayer};
 
 const API_BIND: &str = "127.0.0.1:18080";
-const PYTHON_UPSTREAM: &str = "http://127.0.0.1:18081";
+const UPSTREAM_BASE: &str = "http://127.0.0.1:18081";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -477,7 +477,7 @@ async fn assistant_ask(
     Json(payload): Json<AssistantAskPayload>,
 ) -> impl IntoResponse {
     // Compatibility: keep the existing structured assistant available via the Python upstream.
-    let url = format!("{PYTHON_UPSTREAM}/api/v1/assistant/ask");
+    let url = format!("{UPSTREAM_BASE}/api/v1/assistant/ask");
     let resp = state
         .http
         .post(url)
@@ -514,7 +514,7 @@ async fn assistant_ask(
         .into_response()
 }
 
-async fn proxy_to_python(State(state): State<Arc<AppState>>, mut req: Request<Body>) -> Response {
+async fn proxy_to_upstream(State(state): State<Arc<AppState>>, mut req: Request<Body>) -> Response {
     // Only proxy /api/v1/*
     let uri = req.uri().clone();
     let path_and_query = uri.path_and_query().map(|v| v.as_str()).unwrap_or("/");
@@ -523,7 +523,7 @@ async fn proxy_to_python(State(state): State<Arc<AppState>>, mut req: Request<Bo
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     }
 
-    let upstream_url = format!("{PYTHON_UPSTREAM}{path_and_query}");
+    let upstream_url = format!("{UPSTREAM_BASE}{path_and_query}");
 
     let method = req.method().clone();
     let headers = req.headers().clone();
@@ -569,24 +569,66 @@ async fn proxy_to_python(State(state): State<Arc<AppState>>, mut req: Request<Bo
     (status, resp_headers, bytes).into_response()
 }
 
-fn spawn_python_upstream() {
-    // Dev-mode: spawn the existing Python backend as the upstream API so we can keep all current features,
-    // then gradually replace endpoints in Rust.
+fn spawn_upstream() {
+    // Dev-mode: prefer the Rust upstream (services/analysis_api_rs). Can be forced to python via FUNDSIGHT_UPSTREAM=python.
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let python = std::env::var("FUNDSIGHT_PYTHON_BIN").unwrap_or_else(|_| "python".to_string());
+    let upstream = std::env::var("FUNDSIGHT_UPSTREAM").unwrap_or_else(|_| "rust".to_string());
 
-    let mut cmd = std::process::Command::new(python);
-    cmd.current_dir(repo_root)
+    if upstream.trim().eq_ignore_ascii_case("python") {
+        let python = std::env::var("FUNDSIGHT_PYTHON_BIN").unwrap_or_else(|_| "python".to_string());
+        let mut cmd = std::process::Command::new(python);
+        cmd.current_dir(&repo_root)
+            .env("FUND_INSIGHT_HOST", "127.0.0.1")
+            .env("FUND_INSIGHT_PORT", "18081")
+            .args(["-m", "services.analysis_api.server"]);
+
+        match cmd.spawn() {
+            Ok(_child) => {
+                tracing::info!("spawned python upstream on http://127.0.0.1:18081");
+            }
+            Err(error) => {
+                tracing::error!("failed to spawn python upstream: {error}");
+            }
+        }
+        return;
+    }
+
+    // Rust upstream
+    let bin_path = repo_root.join("services/analysis_api_rs/target/debug/analysis_api_rs");
+    if bin_path.exists() {
+        let mut cmd = std::process::Command::new(bin_path);
+        cmd.current_dir(&repo_root)
+            .env("FUND_INSIGHT_HOST", "127.0.0.1")
+            .env("FUND_INSIGHT_PORT", "18081");
+        match cmd.spawn() {
+            Ok(_child) => {
+                tracing::info!("spawned rust upstream on http://127.0.0.1:18081");
+            }
+            Err(error) => {
+                tracing::error!("failed to spawn rust upstream: {error}");
+            }
+        }
+        return;
+    }
+
+    // Fallback: cargo run (slower)
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.current_dir(&repo_root)
         .env("FUND_INSIGHT_HOST", "127.0.0.1")
         .env("FUND_INSIGHT_PORT", "18081")
-        .args(["-m", "services.analysis_api.server"]);
+        .args([
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "services/analysis_api_rs/Cargo.toml",
+        ]);
 
     match cmd.spawn() {
         Ok(_child) => {
-            tracing::info!("spawned python upstream on http://127.0.0.1:18081");
+            tracing::info!("spawned rust upstream via cargo on http://127.0.0.1:18081");
         }
         Err(error) => {
-            tracing::error!("failed to spawn python upstream: {error}");
+            tracing::error!("failed to spawn rust upstream via cargo: {error}");
         }
     }
 }
@@ -616,7 +658,7 @@ fn spawn_api_server() {
             )
             .route("/api/v1/assistant/ask", post(assistant_ask))
             .route("/api/v1/assistant/ask/stream", post(assistant_ask_stream))
-            .route("/api/v1/{*path}", any(proxy_to_python))
+            .route("/api/v1/{*path}", any(proxy_to_upstream))
             .layer(cors)
             .with_state(state);
 
@@ -643,7 +685,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|_| {
-            spawn_python_upstream();
+            spawn_upstream();
             spawn_api_server();
             Ok(())
         })

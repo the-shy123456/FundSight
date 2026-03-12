@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/portfolio", get(get_portfolio))
         .route("/api/v1/portfolio/intraday", get(get_portfolio_intraday))
         .route("/api/v1/holdings/import", post(post_holdings_import))
+        .route("/api/v1/holdings/ocr", post(post_holdings_ocr))
         .route("/api/v1/watchlist", get(get_watchlist).post(post_watchlist))
         .route("/api/v1/watchlist/intraday", get(get_watchlist_intraday))
         .route("/api/v1/watchlist/{fund_id}", delete(delete_watchlist_id))
@@ -69,7 +70,10 @@ async fn get_portfolio_intraday() -> impl IntoResponse {
 }
 
 
-async fn post_holdings_import(State(state): State<Arc<AppState>>, Json(payload): Json<Value>) -> impl IntoResponse {
+async fn post_holdings_import(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
     match holdings::parse_holdings_payload(&payload) {
         Ok(next) => {
             if let Err(error) = holdings::save_holdings(&next) {
@@ -92,6 +96,22 @@ async fn post_holdings_import(State(state): State<Arc<AppState>>, Json(payload):
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HoldingsOcrRequest {
+    #[serde(default)]
+    image_base64: String,
+}
+
+async fn post_holdings_ocr(Json(_payload): Json<HoldingsOcrRequest>) -> impl IntoResponse {
+    // Windows 端会用系统 OCR 实现；Rust 服务在跨平台阶段先提供不报错的占位响应，避免前端崩。
+    (
+        StatusCode::OK,
+        Json(json!({
+            "suggestions": [],
+            "warnings": ["OCR 功能正在迁移到 Rust/Windows 原生实现中（当前版本暂不可用）。"],
+        })),
+    )
+}
 async fn get_watchlist(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let store = watchlist::load_watchlist();
     let ids = watchlist::normalized_items(&store.items);
