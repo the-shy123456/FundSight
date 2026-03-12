@@ -1,0 +1,27 @@
+[package]
+name = "analysis_api_rs"
+version = "0.1.0"
+edition = "2021"
+
+description = "FundSight Rust analysis API (replacement for services.analysis_api)"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+# HTTP fetches to real data providers
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Persistence
+directories = "6"
+
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[lib]
+path = "src/lib.rs"
