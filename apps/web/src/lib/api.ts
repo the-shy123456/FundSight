@@ -190,3 +190,78 @@ export async function requestAssistant(payload: {
     }),
   });
 }
+
+export async function requestAssistantStream(
+  payload: {
+    fundId?: string;
+    question: string;
+    estimateMode?: "auto" | "official" | "penetration";
+  },
+  options: {
+    onDelta: (text: string) => void;
+    onEvent?: (event: string, data: string) => void;
+  },
+): Promise<void> {
+  const response = await fetch(withApiBase("/api/v1/assistant/ask/stream"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fund_id: payload.fundId ?? "",
+      cash_available: 0,
+      question: payload.question,
+      estimate_mode: payload.estimateMode,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `请求失败：${response.status}`;
+    try {
+      const json = (await response.json()) as { message?: string };
+      if (json?.message) message = json.message;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+
+  if (!response.body) {
+    throw new Error("流式响应不可用");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  const emit = (event: string, data: string) => {
+    options.onEvent?.(event, data);
+    if (event === "delta") {
+      options.onDelta(data);
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sepIndex = buffer.indexOf("\n\n");
+    while (sepIndex >= 0) {
+      const raw = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      sepIndex = buffer.indexOf("\n\n");
+
+      const lines = raw.split("\n");
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          event = line.slice("event:".length).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trim());
+        }
+      }
+      const data = dataLines.join("\n");
+      if (data) emit(event, data);
+    }
+  }
+}

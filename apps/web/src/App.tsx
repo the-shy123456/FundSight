@@ -19,6 +19,7 @@ import {
   removeFromWatchlist,
   requestIntradayEstimate,
   requestAssistant,
+  requestAssistantStream,
   requestFundSearch,
   requestFundNavTrend,
   requestFundTopHoldings,
@@ -1398,19 +1399,46 @@ export default function App() {
     setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: cleanQuestion }]);
     setAssistantLoading(true);
 
+    const assistantMessageId = crypto.randomUUID();
+    setChatMessages((current) => [...current, { id: assistantMessageId, role: "assistant", text: "" }]);
+
+    try {
+      await requestAssistantStream(
+        {
+          fundId: portfolioQuestion ? "" : targetFundId,
+          question: cleanQuestion,
+          estimateMode,
+        },
+        {
+          onDelta: (text) => {
+            setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: `${item.text}${text}` } : item)));
+          },
+        },
+      );
+
+      if (!portfolioQuestion && targetFundId) {
+        setActiveFundId(targetFundId);
+      }
+      setQuestion("");
+      return;
+    } catch {
+      // Fallback to non-stream response.
+    }
+
     try {
       const payload = await requestAssistant({
         fundId: portfolioQuestion ? "" : targetFundId,
         question: cleanQuestion,
         estimateMode,
       });
-      setChatMessages((current) => [...current, buildAssistantMessage(payload)]);
+      const message = buildAssistantMessage(payload);
+      setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...message, id: assistantMessageId } : item)));
       if (!portfolioQuestion && targetFundId) {
         setActiveFundId(targetFundId);
       }
       setQuestion("");
     } catch (error) {
-      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: error instanceof Error ? error.message : "AI 助手暂时不可用，请稍后重试。" }]);
+      setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: error instanceof Error ? error.message : "AI 助手暂时不可用，请稍后重试。" } : item)));
     } finally {
       setAssistantLoading(false);
     }

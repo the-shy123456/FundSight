@@ -763,4 +763,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
 
 
 if __name__ == "__main__":
-    run_server()
+    import os
+
+    host = os.environ.get("FUND_INSIGHT_HOST", "127.0.0.1")
+    port_raw = os.environ.get("FUND_INSIGHT_PORT", "8080")
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 8080
+    run_server(host=host, port=port)
