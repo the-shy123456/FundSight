@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.fundsight.desktop",
   "build": {
-    "beforeDevCommand": "cd ../../../web && VITE_API_BASE=http://127.0.0.1:18080 npm run dev -- --host 127.0.0.1 --port 5173",
+    "beforeDevCommand": "npm run web:dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "cd ../../../web && VITE_API_BASE=http://127.0.0.1:18080 npm run build",
+    "beforeBuildCommand": "npm run web:build",
     "frontendDist": "../../../web/dist"
   },
   "app": {
