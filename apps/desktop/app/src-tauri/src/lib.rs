@@ -27,6 +27,7 @@ const UPSTREAM_BASE: &str = "http://127.0.0.1:18081";
 #[serde(rename_all = "snake_case")]
 pub enum LlmProtocol {
     Openai_compatible,
+    Openai_responses,
     Anthropic_messages,
 }
 
@@ -216,6 +217,15 @@ fn openai_endpoint(base_url: &str) -> String {
     }
 }
 
+fn openai_responses_endpoint(base_url: &str) -> String {
+    let root = normalize_base_url(base_url);
+    if root.ends_with("/v1") {
+        format!("{root}/responses")
+    } else {
+        format!("{root}/v1/responses")
+    }
+}
+
 fn anthropic_endpoint(base_url: &str) -> String {
     let root = normalize_base_url(base_url);
     if root.ends_with("/v1") {
@@ -291,6 +301,87 @@ async fn openai_stream(
                         .unwrap_or("");
                     if !delta.is_empty() {
                         yield delta.to_string();
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(parsed.boxed())
+}
+
+async fn openai_responses_stream(
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    prompt: String,
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    let url = openai_responses_endpoint(&base_url);
+    let body = json!({
+        "model": model,
+        "stream": true,
+        "instructions": "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。",
+        "input": prompt,
+        "temperature": 0.6
+    });
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let stream = resp.bytes_stream();
+
+    let parsed = async_stream::try_stream! {
+        let mut buffer = String::new();
+        futures::pin_mut!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("读取流失败: {e}"))?;
+            let part = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&part);
+
+            while let Some(idx) = buffer.find("\n\n") {
+                let event = buffer[..idx].to_string();
+                buffer = buffer[idx + 2..].to_string();
+
+                for line in event.lines() {
+                    let line = line.trim();
+                    if !line.starts_with("data:") {
+                        continue;
+                    }
+                    let data = line.trim_start_matches("data:").trim();
+                    if data == "[DONE]" {
+                        return;
+                    }
+
+                    let value: serde_json::Value = serde_json::from_str(data).unwrap_or(json!({}));
+                    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if event_type == "response.output_text.delta" {
+                        let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+                        if !delta.is_empty() {
+                            yield delta.to_string();
+                        }
+                    } else if event_type == "response.completed" || event_type.ends_with(".done") {
+                        return;
+                    } else if event_type == "response.failed" {
+                        let message = value
+                            .get("error")
+                            .and_then(|v| v.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("OpenAI Responses failed");
+                        Err::<(), _>(message.to_string())?;
                     }
                 }
             }
@@ -425,6 +516,9 @@ async fn assistant_ask_stream(
         let result = match cfg.protocol {
             LlmProtocol::Openai_compatible => {
                 openai_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
+            }
+            LlmProtocol::Openai_responses => {
+                openai_responses_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
             }
             LlmProtocol::Anthropic_messages => {
                 anthropic_stream(client, cfg.base_url, cfg.model, api_key, prompt).await

@@ -143,6 +143,18 @@ export async function requestHoldingsImport(text: string): Promise<PortfolioSnap
   });
 }
 
+export async function requestHoldingsRemove(fundId: string): Promise<PortfolioSnapshot> {
+  return fetchJson<PortfolioSnapshot>(`/api/v1/holdings/${encodeURIComponent(fundId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function requestHoldingsClear(): Promise<PortfolioSnapshot> {
+  return fetchJson<PortfolioSnapshot>("/api/v1/holdings", {
+    method: "DELETE",
+  });
+}
+
 export async function requestPortfolio(estimateMode?: "auto" | "official" | "penetration"): Promise<PortfolioSnapshot> {
   const query = estimateMode ? `?estimate_mode=${encodeURIComponent(estimateMode)}` : "";
   return fetchJson<PortfolioSnapshot>(`/api/v1/portfolio${query}`);
@@ -191,7 +203,7 @@ export async function requestAssistant(payload: {
   });
 }
 
-export type LlmProtocol = "openai_compatible" | "anthropic_messages";
+export type LlmProtocol = "openai_compatible" | "openai_responses" | "anthropic_messages";
 
 export type LlmConfigView = {
   protocol: LlmProtocol;
@@ -259,6 +271,9 @@ export async function requestAssistantStream(
 
   const emit = (event: string, data: string) => {
     options.onEvent?.(event, data);
+    if (event === "error") {
+      throw new Error(data || "AI 流式接口返回错误");
+    }
     if (event === "delta") {
       options.onDelta(data);
     }

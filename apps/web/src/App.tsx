@@ -25,6 +25,8 @@ import {
   requestFundTopHoldings,
   requestFundsCatalog,
   requestHoldingsImport,
+  requestHoldingsRemove,
+  requestHoldingsClear,
   requestHoldingsOcr,
   requestPortfolio,
   requestPortfolioIntraday,
@@ -141,6 +143,12 @@ const PORTFOLIO_QUESTION_KEYWORDS = [
 ];
 
 const ANNOUNCEMENT_EVIDENCE_LABEL = "最新公告（东财 fundf10）";
+
+const BTN_XS_BASE = "inline-flex items-center justify-center rounded-md border px-2 py-1 text-[11px] font-medium leading-4 transition-colors disabled:opacity-60 disabled:cursor-not-allowed";
+const BTN_XS_GRAY = `${BTN_XS_BASE} bg-white text-gray-700 border-gray-200 hover:bg-gray-50`;
+const BTN_XS_BLUE = `${BTN_XS_BASE} bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100`;
+const BTN_XS_PURPLE = `${BTN_XS_BASE} bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100`;
+const BTN_XS_DANGER = `${BTN_XS_BASE} bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100`;
 
 function isPortfolioQuestion(text: string): boolean {
   const clean = text.trim();
@@ -651,7 +659,7 @@ export default function App() {
   const [llmConfigSupported, setLlmConfigSupported] = useState<boolean | null>(null);
   const [llmConfigLoading, setLlmConfigLoading] = useState(false);
   const [llmConfigNotice, setLlmConfigNotice] = useState("");
-  const [llmProtocol, setLlmProtocol] = useState<"openai_compatible" | "anthropic_messages">("openai_compatible");
+  const [llmProtocol, setLlmProtocol] = useState<"openai_compatible" | "openai_responses" | "anthropic_messages">("openai_compatible");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
@@ -1082,6 +1090,43 @@ export default function App() {
     }
   }
 
+  function notifyHolding(message: string) {
+    if (importOpen) {
+      setModalNotice(message);
+      return;
+    }
+    if (detailOpen) {
+      setDetailNotice(message);
+      return;
+    }
+    if (activeTab === "portfolio") {
+      setPageNotice(message);
+      return;
+    }
+    setPageNotice(message);
+  }
+
+  async function handleRemoveHolding(fundId: string, displayName?: string) {
+    if (!fundId) return;
+    const confirmed = window.confirm(`确定从持仓移除「${displayName || fundId}」吗？`);
+    if (!confirmed) return;
+
+    try {
+      await requestHoldingsRemove(fundId);
+      setManualRows((current) => current.filter((row) => normalizeFundCode(row.fundQuery) !== fundId));
+      setHoldingFirstSeenAtMap((current) => {
+        if (!(fundId in current)) return current;
+        const next = { ...current };
+        delete next[fundId];
+        return next;
+      });
+      notifyHolding(`${displayName || fundId} 已从持仓移除。`);
+      await refreshPortfolioData();
+    } catch (error) {
+      notifyHolding(error instanceof Error ? error.message : "移除持仓失败，请稍后重试。 ");
+    }
+  }
+
   async function searchManualSuggestions(value: string) {
     const cleanQuery = value.trim();
     if (cleanQuery.length < 2 && normalizeFundCode(cleanQuery).length < 6) {
@@ -1465,6 +1510,9 @@ export default function App() {
       return;
     } catch {
       // Fallback to non-stream response.
+      if (!llmHasKey) {
+        setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: "（当前未配置/未保存大模型 API Key，已切换到规则版分析）\n\n" } : item)));
+      }
     }
 
     try {
@@ -1614,7 +1662,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={openImportModal}
-                      className="bg-blue-50 text-blue-600 border border-blue-200 px-2.5 py-1 rounded-lg text-xs hover:bg-blue-100 transition-all font-medium inline-flex items-center"
+                      className={BTN_XS_BLUE}
                     >
                       <FolderPlus className="h-3.5 w-3.5 mr-1" /> 导入持仓
                     </button>
@@ -1624,15 +1672,15 @@ export default function App() {
                         setAssistantOpen(true);
                         void ask();
                       }}
-                      className="bg-purple-50 text-purple-700 border border-purple-200 px-2.5 py-1 rounded-lg text-xs hover:bg-purple-100 transition-all font-medium inline-flex items-center"
+                      className={BTN_XS_PURPLE}
                       disabled={assistantLoading}
                     >
-                      <Sparkles className="h-3.5 w-3.5 mr-1 text-purple-500" /> AI分析
+                      <Bot className="h-3.5 w-3.5 mr-1" /> AI
                     </button>
                     <button
                       type="button"
                       onClick={() => void refreshPortfolioData()}
-                      className="text-xs text-gray-600 hover:text-gray-800 px-2 py-1 rounded-lg border border-gray-200 bg-white inline-flex items-center disabled:opacity-60"
+                      className={BTN_XS_GRAY}
                       disabled={refreshing}
                       title={updateStatusWithMode}
                     >
@@ -1675,20 +1723,27 @@ export default function App() {
                             <div className="inline-flex items-center gap-2">
                               <button
                                 type="button"
-                                className="text-gray-700 hover:text-gray-900 bg-gray-100 px-2 py-0.5 rounded text-xs font-medium"
+                                className={BTN_XS_GRAY}
                                 onClick={() => openFundDetail(item)}
                               >
                                 详情
                               </button>
                               <button
                                 type="button"
-                                className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-0.5 rounded text-xs font-medium"
+                                className={BTN_XS_BLUE}
                                 onClick={() => {
                                   setAssistantOpen(true);
                                   void ask(buildAnalysisQuestion(item), item.fund_id);
                                 }}
                               >
-                                AI分析
+                                <Bot className="h-3.5 w-3.5 mr-1" />AI
+                              </button>
+                              <button
+                                type="button"
+                                className={BTN_XS_DANGER}
+                                onClick={() => void handleRemoveHolding(item.fund_id, resolveFundName(item.name, item.name_display) || item.name || item.fund_id)}
+                              >
+                                移除
                               </button>
                             </div>
                           </td>
@@ -1895,11 +1950,11 @@ export default function App() {
                             <td className="px-6 py-4 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
                             <td className="px-6 py-4 text-center">
                               <div className="inline-flex items-center gap-2">
-                                <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1 rounded text-sm font-medium">加入持仓</button>
+                                <button type="button" onClick={() => openImportFromLibrary(item)} className={BTN_XS_BLUE}>加入持仓</button>
                                 <button
                                   type="button"
                                   onClick={() => void handleAddToWatchlist(item)}
-                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-3 py-1 rounded text-sm font-medium disabled:opacity-60"
+                                  className={BTN_XS_GRAY}
                                   disabled={watchlistIdSet.has(item.fund_id)}
                                 >
                                   {watchlistIdSet.has(item.fund_id) ? "已自选" : "加入自选"}
@@ -1929,8 +1984,8 @@ export default function App() {
                         <option value={20}>20</option>
                         <option value={50}>50</option>
                       </select>
-                      <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: Math.max(1, catalogPage - 1), pageSize: catalogPageSize })} className="px-3 py-1.5 rounded border border-gray-300 disabled:opacity-50" disabled={catalogPage <= 1 || catalogLoading}>上一页</button>
-                      <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: catalogPage + 1, pageSize: catalogPageSize })} className="px-3 py-1.5 rounded border border-gray-300 disabled:opacity-50" disabled={catalogLoading || catalogItems.length < catalogPageSize}>下一页</button>
+                      <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: Math.max(1, catalogPage - 1), pageSize: catalogPageSize })} className={BTN_XS_GRAY} disabled={catalogPage <= 1 || catalogLoading}>上一页</button>
+                      <button type="button" onClick={() => void loadCatalog({ query: catalogQuery, page: catalogPage + 1, pageSize: catalogPageSize })} className={BTN_XS_GRAY} disabled={catalogLoading || catalogItems.length < catalogPageSize}>下一页</button>
                     </div>
                   </div>
                 </div>
@@ -1951,7 +2006,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void loadWatchlist(true)}
-                className="text-sm text-gray-600 hover:text-gray-800 bg-gray-100 px-3 py-2 rounded-lg inline-flex items-center"
+                className={BTN_XS_GRAY}
                 disabled={watchlistLoading}
               >
                 {watchlistLoading ? <LoaderCircle className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}刷新
@@ -1999,14 +2054,14 @@ export default function App() {
                               <div className="inline-flex items-center gap-2">
                                 <button
                                   type="button"
-                                  className="text-gray-700 hover:text-gray-900 bg-gray-100 px-2 py-0.5 rounded text-xs font-medium"
+                                  className={BTN_XS_GRAY}
                                   onClick={() => openFundDetail({ fund_id: item.fund_id })}
                                 >
                                   详情
                                 </button>
                                 <button
                                   type="button"
-                                  className="text-rose-600 hover:text-rose-700 bg-rose-50 px-2 py-0.5 rounded text-xs font-medium"
+                                  className={BTN_XS_DANGER}
                                   onClick={() => void handleRemoveFromWatchlist(item.fund_id, displayName)}
                                 >
                                   移除
@@ -2049,16 +2104,14 @@ export default function App() {
                     <label className="block text-sm font-semibold text-gray-700 mb-1">接口协议</label>
                     <select
                       value={llmProtocol}
-                      onChange={(event) => setLlmProtocol(event.target.value as "openai_compatible" | "anthropic_messages")}
+                      onChange={(event) => setLlmProtocol(event.target.value as "openai_compatible" | "openai_responses" | "anthropic_messages")}
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50"
                       disabled={llmConfigLoading}
                     >
-                      <option value="openai_compatible">OpenAI Compatible（中转站/网关）</option>
-                      <option value="anthropic_messages">Anthropic Messages（Claude）</option>
+                      <option value="openai_compatible">OpenAI Chat</option>
+                      <option value="openai_responses">OpenAI Responses</option>
+                      <option value="anthropic_messages">Anthropic</option>
                     </select>
-                    {llmProtocol === "anthropic_messages" ? (
-                      <div className="mt-1 text-xs text-gray-500">提示：Anthropic 协议需要 Base URL 指向 Anthropic（或兼容其 /v1/messages 的网关）。</div>
-                    ) : null}
                   </div>
 
                   <div>
@@ -2102,7 +2155,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => void saveDesktopLlmConfig()}
-                      className="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold disabled:opacity-60"
+                      className={BTN_XS_BLUE}
                       disabled={llmConfigLoading}
                     >
                       {llmConfigLoading ? "保存中..." : "保存配置"}
@@ -2143,8 +2196,8 @@ export default function App() {
                       <input type="password" value={configForm.apiKey} onChange={(event) => setConfigForm((current) => ({ ...current, apiKey: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" placeholder="sk-..." />
                     </div>
                     <div className="pt-4 flex justify-between border-t border-gray-100">
-                      <button type="button" onClick={() => setConfigNotice(activeConfig ? `当前启用：${activeConfig.name}` : "暂无可用配置") } className="text-sm font-medium text-gray-600 border border-gray-300 px-5 py-2 rounded-lg">测试</button>
-                      <button type="button" onClick={saveConfig} className="bg-blue-600 text-white px-8 py-2 rounded-lg text-sm font-bold">保存配置</button>
+                      <button type="button" onClick={() => setConfigNotice(activeConfig ? `当前启用：${activeConfig.name}` : "暂无可用配置") } className={BTN_XS_GRAY}>测试</button>
+                      <button type="button" onClick={saveConfig} className={BTN_XS_BLUE}>保存配置</button>
                     </div>
                   </div>
                 </>
@@ -2186,7 +2239,7 @@ export default function App() {
                       void handleAddToWatchlist({ fund_id: detailFundId, name: detailFund?.name, name_display: detailFund?.name_display });
                     }
                   }}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium border ${detailInWatchlist ? "bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200" : "bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"}`}
+                  className={detailInWatchlist ? BTN_XS_GRAY : BTN_XS_BLUE}
                 >
                   {detailInWatchlist ? "移除自选" : "加入自选"}
                 </button>
@@ -2201,11 +2254,25 @@ export default function App() {
                       }
                       beginDetailHoldingEdit();
                     }}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
+                    className={BTN_XS_PURPLE}
                   >
                     {detailHoldingEditOpen ? "收起持仓" : "修改持仓"}
                   </button>
-                ) : null}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (detailHoldingEditOpen) {
+                        setDetailHoldingEditOpen(false);
+                        return;
+                      }
+                      beginDetailHoldingEdit();
+                    }}
+                    className={BTN_XS_PURPLE}
+                  >
+                    加入持仓
+                  </button>
+                )}
               </div>
 
               {detailHoldingEditOpen ? (
@@ -2239,7 +2306,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setDetailHoldingEditOpen(false)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                      className={BTN_XS_GRAY}
                       disabled={detailHoldingSaving}
                     >
                       取消
@@ -2247,7 +2314,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => void saveDetailHoldingEdit()}
-                      className="px-3 py-1 rounded-md text-[11px] font-medium border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                      className={BTN_XS_BLUE}
                       disabled={detailHoldingSaving}
                     >
                       {detailHoldingSaving ? "保存中..." : "保存"}
@@ -2504,7 +2571,7 @@ export default function App() {
                           <td className="px-3 py-2 text-right text-sm text-gray-700">{item.latest_nav ? Number(item.latest_nav).toFixed(4) : "--"}</td>
                           <td className="px-3 py-2 text-center">
                             <div className="inline-flex items-center gap-2">
-                              <button type="button" onClick={() => openImportFromLibrary(item)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded text-xs font-medium">加入持仓</button>
+                              <button type="button" onClick={() => openImportFromLibrary(item)} className={BTN_XS_BLUE}>加入持仓</button>
                               <button
                                 type="button"
                                 onClick={() => void handleAddToWatchlist(item)}

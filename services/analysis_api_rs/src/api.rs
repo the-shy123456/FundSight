@@ -33,6 +33,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/portfolio/intraday", get(get_portfolio_intraday))
         .route("/api/v1/holdings/import", post(post_holdings_import))
         .route("/api/v1/holdings/ocr", post(post_holdings_ocr))
+        .route("/api/v1/holdings", delete(delete_holdings_all))
+        .route("/api/v1/holdings/{fund_id}", delete(delete_holding_id))
         .route("/api/v1/assistant/ask", post(post_assistant_ask))
         .route("/api/v1/watchlist", get(get_watchlist).post(post_watchlist))
         .route("/api/v1/watchlist/intraday", get(get_watchlist_intraday))
@@ -238,6 +240,59 @@ async fn post_holdings_import(
             }
         }
         Err(error) => bad_request(error.to_string()).into_response(),
+    }
+}
+
+async fn delete_holdings_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let next: Vec<holdings::HoldingLot> = vec![];
+    if let Err(error) = holdings::save_holdings(&next) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response();
+    }
+
+    match portfolio::build_portfolio_snapshot(&state.http, &next).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn delete_holding_id(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<String>,
+) -> impl IntoResponse {
+    let clean_id = fund_id.trim();
+    if clean_id.is_empty() {
+        return bad_request("fund_id 不能为空").into_response();
+    }
+
+    let current = holdings::load_holdings();
+    let next: Vec<holdings::HoldingLot> = current
+        .into_iter()
+        .filter(|item| item.fund_id.trim() != clean_id)
+        .collect();
+
+    if let Err(error) = holdings::save_holdings(&next) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response();
+    }
+
+    match portfolio::build_portfolio_snapshot(&state.http, &next).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
     }
 }
 

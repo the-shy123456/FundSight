@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -165,9 +166,16 @@ pub async fn fetch_catalog(client: &Client, page: usize, page_size: usize) -> Re
         }));
     }
 
+    let total_records = Regex::new(r"allRecords\s*:\s*(\d+)")
+        .ok()
+        .and_then(|re| re.captures(&text))
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(items.len());
+
     Ok(json!({
         "items": items,
-        "total": items.len(),
+        "total": total_records,
         "page": page,
         "page_size": page_size
     }))
