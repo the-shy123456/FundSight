@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -231,7 +231,7 @@ async fn openai_stream(
     model: String,
     api_key: String,
     prompt: String,
-) -> Result<impl Stream<Item = Result<String, String>>, String> {
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
     let url = openai_endpoint(&base_url);
     let body = json!({
         "model": model,
@@ -297,7 +297,7 @@ async fn openai_stream(
         }
     };
 
-    Ok(parsed)
+    Ok(parsed.boxed())
 }
 
 async fn anthropic_stream(
@@ -306,7 +306,7 @@ async fn anthropic_stream(
     model: String,
     api_key: String,
     prompt: String,
-) -> Result<impl Stream<Item = Result<String, String>>, String> {
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
     let url = anthropic_endpoint(&base_url);
     let body = json!({
         "model": model,
@@ -387,7 +387,7 @@ async fn anthropic_stream(
         }
     };
 
-    Ok(parsed)
+    Ok(parsed.boxed())
 }
 
 async fn assistant_ask_stream(
@@ -433,7 +433,8 @@ async fn assistant_ask_stream(
 
         match result {
             Ok(mut stream) => {
-                while let Some(item) = stream.next().await {
+                while let Some(item) = futures::StreamExt::next(&mut stream).await {
+                    let item: Result<String, String> = item;
                     match item {
                         Ok(delta) => {
                             let _ = tx
