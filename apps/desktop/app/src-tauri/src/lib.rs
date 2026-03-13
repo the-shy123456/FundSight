@@ -527,9 +527,12 @@ async fn proxy_to_upstream(State(state): State<Arc<AppState>>, mut req: Request<
 
     let method = req.method().clone();
     let headers = req.headers().clone();
-    let body = to_bytes(req.body_mut(), 8 * 1024 * 1024)
-        .await
-        .unwrap_or_else(|_| Bytes::new());
+
+    // axum::body::to_bytes takes ownership of Body in axum 0.8.
+    let body: Bytes = match to_bytes(std::mem::take(req.body_mut()), 8 * 1024 * 1024).await {
+        Ok(value) => value,
+        Err(_) => Bytes::new(),
+    };
 
     let mut builder = state.http.request(method, upstream_url);
 
