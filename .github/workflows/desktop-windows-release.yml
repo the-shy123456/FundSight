@@ -54,9 +54,25 @@ jobs:
         working-directory: apps/desktop/app
         run: npm run tauri build -- --bundles nsis --verbose
 
-      - name: List bundles
+      - name: List bundles (debug)
+        shell: pwsh
         run: |
-          dir apps\desktop\app\src-tauri\target\release\bundle /s
+          $bundle = "apps/desktop/app/src-tauri/target/release/bundle"
+          if (Test-Path $bundle) {
+            Get-ChildItem $bundle -Recurse | Select-Object FullName
+          } else {
+            Write-Host "Bundle directory not found: $bundle"
+          }
+
+      - name: Verify NSIS installer exists
+        shell: pwsh
+        run: |
+          $nsis = "apps/desktop/app/src-tauri/target/release/bundle/nsis"
+          if (!(Test-Path $nsis)) { throw "NSIS output folder not found: $nsis" }
+          $exes = Get-ChildItem $nsis -Filter *.exe -ErrorAction SilentlyContinue
+          if ($exes.Count -lt 1) { throw "NSIS installer (.exe) not found in $nsis" }
+          Write-Host "Found installers:";
+          $exes | Select-Object FullName
 
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
