@@ -11,15 +11,22 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      # Opt-in early so we don't get surprised when GitHub Actions switches JavaScript actions to Node 24.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      RUST_BACKTRACE: 1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: |
             apps/web/package-lock.json
@@ -45,7 +52,7 @@ jobs:
 
       - name: Build desktop (Tauri)
         working-directory: apps/desktop/app
-        run: npm run tauri build
+        run: npm run tauri build -- --bundles nsis --verbose
 
       - name: List bundles
         run: |
@@ -59,4 +66,3 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             apps/desktop/app/src-tauri/target/release/bundle/nsis/*.exe
-            apps/desktop/app/src-tauri/target/release/bundle/msi/*.msi
