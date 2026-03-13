@@ -1,7 +1,9 @@
 pub mod api;
+pub mod assistant;
 pub mod funds;
 pub mod holdings;
 pub mod html;
+pub mod metrics;
 pub mod nav;
 pub mod portfolio;
 pub mod real_data;

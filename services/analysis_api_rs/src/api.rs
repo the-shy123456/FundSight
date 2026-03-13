@@ -1,4 +1,4 @@
-use crate::{funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
+use crate::{assistant, funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -6,6 +6,8 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -31,6 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/portfolio/intraday", get(get_portfolio_intraday))
         .route("/api/v1/holdings/import", post(post_holdings_import))
         .route("/api/v1/holdings/ocr", post(post_holdings_ocr))
+        .route("/api/v1/assistant/ask", post(post_assistant_ask))
         .route("/api/v1/watchlist", get(get_watchlist).post(post_watchlist))
         .route("/api/v1/watchlist/intraday", get(get_watchlist_intraday))
         .route("/api/v1/watchlist/{fund_id}", delete(delete_watchlist_id))
@@ -49,26 +52,168 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok", "service": "analysis_api_rs" })))
 }
 
-async fn get_portfolio(State(state): State<Arc<AppState>>, Query(_q): Query<EstimateModeQuery>) -> impl IntoResponse {
+async fn get_portfolio(
+    State(state): State<Arc<AppState>>,
+    Query(_q): Query<EstimateModeQuery>,
+) -> impl IntoResponse {
     let holdings = holdings::load_holdings();
     match portfolio::build_portfolio_snapshot(&state.http, &holdings).await {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "message": error.to_string() }))).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
     }
 }
 
-async fn get_portfolio_intraday() -> impl IntoResponse {
-    // Current frontend does not depend on intraday chart yet. Return empty contract.
+async fn get_portfolio_intraday(
+    State(state): State<Arc<AppState>>,
+    Query(_q): Query<EstimateModeQuery>,
+) -> impl IntoResponse {
+    let active = holdings::load_holdings();
+    if active.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "chart": {"labels": [], "series": []},
+                "contributions": [],
+                "disclaimer": "暂无持仓，无法生成盘中贡献图。"
+            })),
+        );
+    }
+
+    let labels = vec!["昨收", "当前"];
+
+    let mut contributions: Vec<Value> = vec![];
+    let mut previous_total = 0.0f64;
+    let mut today_total_pnl = 0.0f64;
+
+    // First pass: compute totals.
+    let mut rows: Vec<(holdings::HoldingLot, Value)> = vec![];
+    for lot in active.iter().cloned() {
+        match real_data::fetch_fund_estimate(&state.http, &lot.fund_id).await {
+            Ok(estimate) => {
+                let latest_nav = estimate
+                    .get("latest_nav")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let estimated_nav = estimate
+                    .get("estimated_nav")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(latest_nav);
+                let previous_value = lot.shares * latest_nav;
+                let current_value = lot.shares * estimated_nav;
+                previous_total += previous_value;
+                today_total_pnl += current_value - previous_value;
+                rows.push((lot, estimate));
+            }
+            Err(_) => continue,
+        }
+    }
+
+    if previous_total <= 0.0 {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "chart": {"labels": labels, "series": []},
+                "contributions": [],
+                "disclaimer": "持仓数据异常，无法生成盘中贡献图。"
+            })),
+        );
+    }
+
+    // Second pass: build contributions.
+    for (lot, estimate) in rows {
+        let name = estimate
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(lot.fund_id.as_str())
+            .to_string();
+        let latest_nav = estimate
+            .get("latest_nav")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let estimated_nav = estimate
+            .get("estimated_nav")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(latest_nav);
+        let estimate_as_of = estimate
+            .get("estimate_as_of")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let estimated_return = estimate
+            .get("estimated_return")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let previous_value = lot.shares * latest_nav;
+        let current_value = lot.shares * estimated_nav;
+        let today_estimated_pnl = current_value - previous_value;
+        let weight = previous_value / previous_total;
+
+        let confidence_label = if estimated_return.abs() >= 0.012 {
+            "高"
+        } else if estimated_return.abs() >= 0.006 {
+            "中"
+        } else {
+            "低"
+        };
+
+        contributions.push(json!({
+            "fund_id": lot.fund_id,
+            "name": name,
+            "name_display": name,
+            "theme": "",
+            "today_estimated_pnl": (today_estimated_pnl * 100.0).round() / 100.0,
+            "confidence_label": confidence_label,
+            "weight": (weight * 10000.0).round() / 10000.0,
+            "estimate_source_label": "官方估值",
+            "estimate_as_of": estimate_as_of,
+            "is_real_data": true,
+        }));
+    }
+
+    contributions.sort_by(|a, b| {
+        let av = a
+            .get("today_estimated_pnl")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .abs();
+        let bv = b
+            .get("today_estimated_pnl")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .abs();
+        bv.partial_cmp(&av)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let portfolio_return = today_total_pnl / previous_total;
+    let return_series = vec![0.0, (portfolio_return * 10000.0).round() / 10000.0];
+    let pnl_series = vec![0.0, (today_total_pnl * 100.0).round() / 100.0];
+
+    let chart = json!({
+        "labels": labels,
+        "series": [
+            {"name": "组合盘中估算收益率", "values": return_series},
+            {"name": "昨日净值基准", "values": vec![0.0, 0.0]},
+        ],
+        "unit": "return"
+    });
+
     (
         StatusCode::OK,
         Json(json!({
-            "chart": {"labels": [], "series": []},
-            "contributions": [],
-            "disclaimer": "盘中贡献图暂未实现（Rust 版接口迁移中）。"
+            "estimate_mode": "official",
+            "chart": chart,
+            "contributions": contributions,
+            "estimated_pnl_series": pnl_series,
+            "estimated_return_series": return_series,
+            "disclaimer": "组合盘中曲线基于官方实时估值聚合生成，适合观察盘中节奏，不替代基金公司最终净值。",
         })),
     )
 }
-
 
 async fn post_holdings_import(
     State(state): State<Arc<AppState>>,
@@ -102,16 +247,145 @@ struct HoldingsOcrRequest {
     image_base64: String,
 }
 
-async fn post_holdings_ocr(Json(_payload): Json<HoldingsOcrRequest>) -> impl IntoResponse {
-    // Windows 端会用系统 OCR 实现；Rust 服务在跨平台阶段先提供不报错的占位响应，避免前端崩。
+async fn post_holdings_ocr(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<HoldingsOcrRequest>,
+) -> impl IntoResponse {
+    let raw = payload.image_base64.trim();
+    if raw.is_empty() {
+        return bad_request("image_base64 不能为空").into_response();
+    }
+
+    let b64 = if raw.starts_with("data:") {
+        raw.split_once("base64,").map(|(_, b)| b).unwrap_or("")
+    } else {
+        raw
+    };
+
+    let bytes = match BASE64.decode(b64) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "suggestions": [],
+                    "warnings": ["图片解码失败：请重新截图或换一张更清晰的图片。"],
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Experimental: allow feeding plain-text CSV as "image" for fast iteration.
+    let text = match String::from_utf8(bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "suggestions": [],
+                    "warnings": ["当前版本 OCR 仍在迁移中（Windows 原生 OCR 待接入）。"],
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if !text.contains(',') {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "suggestions": [],
+                "warnings": ["当前版本 OCR 仍在迁移中（Windows 原生 OCR 待接入）。"],
+            })),
+        )
+            .into_response();
+    }
+
+    let lots = match holdings::parse_holdings_text(&text) {
+        Ok(v) => v,
+        Err(error) => {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "suggestions": [],
+                    "warnings": [format!("OCR 解析失败：{error}")],
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let mut suggestions: Vec<Value> = vec![];
+
+    for lot in lots {
+        let estimate = match real_data::fetch_fund_estimate(&state.http, &lot.fund_id).await {
+            Ok(v) => v,
+            Err(_) => json!({"name": lot.fund_id, "estimated_nav": 0.0, "latest_nav": 0.0}),
+        };
+
+        let name = estimate
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(lot.fund_id.as_str());
+        let nav = estimate
+            .get("estimated_nav")
+            .and_then(|v| v.as_f64())
+            .or_else(|| estimate.get("latest_nav").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        if nav <= 0.0 {
+            continue;
+        }
+
+        let amount = lot.shares * nav;
+        let cost_basis = lot.shares * lot.unit_cost;
+        let profit = amount - cost_basis;
+
+        suggestions.push(json!({
+            "fundQuery": lot.fund_id,
+            "fundName": name,
+            "amount": format!("{:.2}", amount),
+            "profit": format!("{:.2}", profit),
+        }));
+    }
+
     (
         StatusCode::OK,
         Json(json!({
-            "suggestions": [],
-            "warnings": ["OCR 功能正在迁移到 Rust/Windows 原生实现中（当前版本暂不可用）。"],
+            "suggestions": suggestions,
+            "warnings": if suggestions.is_empty() {
+                vec!["未能解析到有效基金行（请检查格式 fund_id,shares,unit_cost）。".to_string()]
+            } else {
+                Vec::<String>::new()
+            },
         })),
     )
+        .into_response()
 }
+
+async fn post_assistant_ask(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match assistant::ask(&state.http, &payload).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) => {
+            let message = error.to_string();
+            let status = if message.contains("不能为空")
+                || message.contains("格式")
+                || message.contains("请先")
+                || message.contains("不支持")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": message }))).into_response()
+        }
+    }
+}
+
 async fn get_watchlist(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let store = watchlist::load_watchlist();
     let ids = watchlist::normalized_items(&store.items);
@@ -147,7 +421,11 @@ struct WatchlistAddBody {
 
 async fn post_watchlist(Json(body): Json<WatchlistAddBody>) -> impl IntoResponse {
     match watchlist::add_watchlist_id(&body.fund_id) {
-        Ok(_) => (StatusCode::OK, Json(json!({ "added": true, "fund_id": body.fund_id }))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({ "added": true, "fund_id": body.fund_id })),
+        )
+            .into_response(),
         Err(error) => bad_request(error.to_string()).into_response(),
     }
 }
@@ -155,7 +433,11 @@ async fn post_watchlist(Json(body): Json<WatchlistAddBody>) -> impl IntoResponse
 async fn delete_watchlist_id(Path(fund_id): Path<String>) -> impl IntoResponse {
     match watchlist::remove_watchlist_id(&fund_id) {
         Ok(_) => (StatusCode::OK, Json(json!({ "deleted": true }))).into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": error.to_string() }))).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -217,7 +499,11 @@ async fn get_funds_search(
     let limit = query.limit.unwrap_or(10).clamp(1, 50);
 
     match funds::search_funds(&state.http, &q, limit).await {
-        Ok(items) => (StatusCode::OK, Json(json!({ "items": items, "total": items.len() }))).into_response(),
+        Ok(items) => (
+            StatusCode::OK,
+            Json(json!({ "items": items, "total": items.len() })),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "message": error.to_string() })),
