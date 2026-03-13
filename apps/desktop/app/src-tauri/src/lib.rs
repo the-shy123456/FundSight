@@ -570,67 +570,28 @@ async fn proxy_to_upstream(State(state): State<Arc<AppState>>, mut req: Request<
 }
 
 fn spawn_upstream() {
-    // Dev-mode: prefer the Rust upstream (services/analysis_api_rs). Can be forced to python via FUNDSIGHT_UPSTREAM=python.
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let upstream = std::env::var("FUNDSIGHT_UPSTREAM").unwrap_or_else(|_| "rust".to_string());
+    // Release-safe: run the Rust upstream API in-process (no repo-root paths, no cargo/python dependency).
+    tauri::async_runtime::spawn(async move {
+        let addr: std::net::SocketAddr = "127.0.0.1:18081".parse().expect("valid bind addr");
 
-    if upstream.trim().eq_ignore_ascii_case("python") {
-        let python = std::env::var("FUNDSIGHT_PYTHON_BIN").unwrap_or_else(|_| "python".to_string());
-        let mut cmd = std::process::Command::new(python);
-        cmd.current_dir(&repo_root)
-            .env("FUND_INSIGHT_HOST", "127.0.0.1")
-            .env("FUND_INSIGHT_PORT", "18081")
-            .args(["-m", "services.analysis_api.server"]);
+        let state = std::sync::Arc::new(analysis_api_rs::api::AppState {
+            http: reqwest::Client::new(),
+        });
+        let app = analysis_api_rs::api::router(state);
 
-        match cmd.spawn() {
-            Ok(_child) => {
-                tracing::info!("spawned python upstream on http://127.0.0.1:18081");
-            }
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(v) => v,
             Err(error) => {
-                tracing::error!("failed to spawn python upstream: {error}");
+                tracing::error!("failed to bind upstream API server on {addr}: {error}");
+                return;
             }
-        }
-        return;
-    }
+        };
 
-    // Rust upstream
-    let bin_path = repo_root.join("services/analysis_api_rs/target/debug/analysis_api_rs");
-    if bin_path.exists() {
-        let mut cmd = std::process::Command::new(bin_path);
-        cmd.current_dir(&repo_root)
-            .env("FUND_INSIGHT_HOST", "127.0.0.1")
-            .env("FUND_INSIGHT_PORT", "18081");
-        match cmd.spawn() {
-            Ok(_child) => {
-                tracing::info!("spawned rust upstream on http://127.0.0.1:18081");
-            }
-            Err(error) => {
-                tracing::error!("failed to spawn rust upstream: {error}");
-            }
+        tracing::info!("upstream API server listening on http://{addr}");
+        if let Err(error) = axum::serve(listener, app).await {
+            tracing::error!("upstream API server error: {error}");
         }
-        return;
-    }
-
-    // Fallback: cargo run (slower)
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(&repo_root)
-        .env("FUND_INSIGHT_HOST", "127.0.0.1")
-        .env("FUND_INSIGHT_PORT", "18081")
-        .args([
-            "run",
-            "--quiet",
-            "--manifest-path",
-            "services/analysis_api_rs/Cargo.toml",
-        ]);
-
-    match cmd.spawn() {
-        Ok(_child) => {
-            tracing::info!("spawned rust upstream via cargo on http://127.0.0.1:18081");
-        }
-        Err(error) => {
-            tracing::error!("failed to spawn rust upstream via cargo: {error}");
-        }
-    }
+    });
 }
 
 fn spawn_api_server() {

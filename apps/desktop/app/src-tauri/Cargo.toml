@@ -36,3 +36,6 @@ keyring = "3"
 tokio-stream = "0.1"
 async-stream = "0.3"
 
+# Embed the Rust upstream API in-process for release builds.
+analysis_api_rs = { path = "../../../../services/analysis_api_rs" }
+
