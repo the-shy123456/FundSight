@@ -450,6 +450,33 @@ fn sse_simple(text: String) -> Response {
         .into_response()
 }
 
+fn sse_action_prompt(text: String, action: Value) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
+    tauri::async_runtime::spawn(async move {
+        let _ = tx
+            .send(Ok(Event::default().event("delta").data(text)))
+            .await;
+        let _ = tx
+            .send(Ok(
+                Event::default()
+                    .event("action")
+                    .data(action.to_string()),
+            ))
+            .await;
+        let _ = tx
+            .send(Ok(Event::default().event("done").data("done")))
+            .await;
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
+}
+
 async fn ensure_default_conversation(state: &Arc<AppState>) -> Result<String, String> {
     // If no conversation exists, create one.
     let existing = { state.agent_store.read().await.conversations.first().cloned() };
@@ -617,8 +644,16 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
         });
         convo.updated_at_ms = now_ms();
         let _ = save_conversation(&state.agent_root, convo).await;
-        return Some(sse_simple(
+        return Some(sse_action_prompt(
             "将清空【自选】列表。回复「确认」执行，回复「取消」撤销。".to_string(),
+            json!({
+                "type": "confirm",
+                "pending": "clear_watchlist",
+                "buttons": [
+                    {"label": "确认", "message": "确认", "variant": "primary"},
+                    {"label": "取消", "message": "取消", "variant": "secondary"}
+                ]
+            }),
         ));
     }
 
@@ -629,8 +664,16 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
         });
         convo.updated_at_ms = now_ms();
         let _ = save_conversation(&state.agent_root, convo).await;
-        return Some(sse_simple(
+        return Some(sse_action_prompt(
             "将清空【持仓】数据。回复「确认」执行，回复「取消」撤销。".to_string(),
+            json!({
+                "type": "confirm",
+                "pending": "clear_holdings",
+                "buttons": [
+                    {"label": "确认", "message": "确认", "variant": "primary"},
+                    {"label": "取消", "message": "取消", "variant": "secondary"}
+                ]
+            }),
         ));
     }
 
@@ -890,15 +933,28 @@ pub async fn chat_stream(
         None
     };
 
-    let prompt = build_prompt(effective_mode, &convo, &message, invest_ctx);
+    let prompt = build_prompt(effective_mode.clone(), &convo, &message, invest_ctx);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     let client = state.http.clone();
     let llm_cfg = cfg.clone();
     let convo_id_clone = convo_id.clone();
     let agent_root = state.agent_root.clone();
+    let mode_label = match effective_mode {
+        AgentMode::Chat => "chat",
+        AgentMode::Invest => "invest",
+        AgentMode::Auto => "auto",
+    }
+    .to_string();
 
     tauri::async_runtime::spawn(async move {
+        // Let UI know which mode was used.
+        let _ = tx
+            .send(Ok(Event::default().event("meta").data(
+                json!({"mode": mode_label}).to_string(),
+            )))
+            .await;
+
         let result = match llm_cfg.protocol {
             LlmProtocol::Openai_compatible => {
                 crate::openai_stream(client, llm_cfg.base_url, llm_cfg.model, api_key, prompt).await

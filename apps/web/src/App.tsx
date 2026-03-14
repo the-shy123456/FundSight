@@ -104,6 +104,8 @@ type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
+  meta?: { mode?: string };
+  uiActions?: Array<{ label: string; message: string; variant?: "primary" | "secondary" | "danger" }>;
   announcements?: AnnouncementItem[];
   perFundAnnouncements?: Array<{ fund_id: string; name: string; items: AnnouncementItem[] }>;
 };
@@ -1757,6 +1759,27 @@ export default function App() {
               onDelta: (text) => {
                 setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: `${item.text}${text}` } : item)));
               },
+              onEvent: (event, data) => {
+                if (event === "meta") {
+                  try {
+                    const meta = JSON.parse(data) as { mode?: string };
+                    setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, meta: { ...item.meta, mode: meta.mode } } : item)));
+                  } catch {
+                    // ignore
+                  }
+                }
+
+                if (event === "action") {
+                  try {
+                    const action = JSON.parse(data) as { buttons?: Array<{ label: string; message: string; variant?: "primary" | "secondary" | "danger" }> };
+                    if (Array.isArray(action.buttons) && action.buttons.length) {
+                      setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, uiActions: action.buttons } : item)));
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+              },
             },
           );
 
@@ -2227,7 +2250,31 @@ export default function App() {
                       {chatMessages.map((message) => (
                         <div key={message.id} className={message.role === "user" ? "flex items-end justify-end" : "flex items-start"}>
                           <div className={message.role === "user" ? "bg-blue-600 text-white p-3 rounded-xl rounded-tr-sm shadow-sm text-sm max-w-[85%] whitespace-pre-line" : "bg-white border border-gray-200 text-gray-700 p-3 rounded-xl rounded-tl-sm shadow-sm text-sm max-w-[92%] leading-relaxed"}>
+                            {message.role === "assistant" && message.meta?.mode ? (
+                              <div className="mb-2 text-[10px] text-gray-400">
+                                mode: <span className="font-mono">{message.meta.mode}</span>
+                              </div>
+                            ) : null}
                             <div className="whitespace-pre-line">{message.text}</div>
+
+                            {message.role === "assistant" && message.uiActions?.length ? (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {message.uiActions.map((action) => (
+                                  <button
+                                    key={`${action.label}-${action.message}`}
+                                    type="button"
+                                    className={action.variant === "primary" ? BTN_XS_BLUE : BTN_XS_GRAY}
+                                    onClick={() => {
+                                      setQuestion(action.message);
+                                      void ask(action.message);
+                                    }}
+                                  >
+                                    {action.label}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+
                             {message.role === "assistant" && message.announcements ? (
                               <AnnouncementCard title={ANNOUNCEMENT_EVIDENCE_LABEL} items={message.announcements} />
                             ) : null}
