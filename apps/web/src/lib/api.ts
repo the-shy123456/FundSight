@@ -259,26 +259,78 @@ export async function saveLlmConfig(payload: {
   });
 }
 
-export async function requestAssistantStream(
-  payload: {
-    fundId?: string;
-    question: string;
-    estimateMode?: "auto" | "official" | "penetration";
-  },
+export type AgentMode = "auto" | "invest" | "chat";
+
+export type AgentConversationView = {
+  id: string;
+  title: string;
+  mode: AgentMode;
+  created_at_ms: number;
+  updated_at_ms: number;
+};
+
+export type AgentMessage = {
+  role: "assistant" | "user";
+  text: string;
+  ts_ms: number;
+};
+
+export async function requestAgentConversations(): Promise<{ items: AgentConversationView[]; total: number }> {
+  return fetchJson<{ items: AgentConversationView[]; total: number }>("/api/v1/agent/conversations");
+}
+
+export async function createAgentConversation(payload?: { title?: string; mode?: AgentMode }): Promise<AgentConversationView> {
+  return fetchJson<AgentConversationView>("/api/v1/agent/conversations", {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export async function renameAgentConversation(id: string, title: string): Promise<AgentConversationView> {
+  return fetchJson<AgentConversationView>(`/api/v1/agent/conversations/${encodeURIComponent(id)}/rename`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function setAgentConversationMode(id: string, mode: AgentMode): Promise<AgentConversationView> {
+  return fetchJson<AgentConversationView>(`/api/v1/agent/conversations/${encodeURIComponent(id)}/mode`, {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export async function deleteAgentConversation(id: string): Promise<{ deleted: boolean }> {
+  return fetchJson<{ deleted: boolean }>(`/api/v1/agent/conversations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function resetAgentConversation(id: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/v1/agent/conversations/${encodeURIComponent(id)}/reset`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function requestAgentMessages(id: string): Promise<{ items: AgentMessage[]; total: number; summary?: string; mode?: AgentMode }> {
+  return fetchJson<{ items: AgentMessage[]; total: number; summary?: string; mode?: AgentMode }>(
+    `/api/v1/agent/conversations/${encodeURIComponent(id)}/messages`,
+  );
+}
+
+async function ssePost(
+  url: string,
+  body: unknown,
   options: {
     onDelta: (text: string) => void;
     onEvent?: (event: string, data: string) => void;
   },
 ): Promise<void> {
-  const response = await fetch(withApiBase("/api/v1/assistant/ask/stream"), {
+  const response = await fetch(withApiBase(url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      fund_id: payload.fundId ?? "",
-      cash_available: 0,
-      question: payload.question,
-      estimate_mode: payload.estimateMode,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -335,4 +387,55 @@ export async function requestAssistantStream(
       if (data) emit(event, data);
     }
   }
+}
+
+export async function requestAgentChatStream(
+  payload: {
+    conversationId?: string;
+    message: string;
+    mode?: AgentMode;
+    fundId?: string;
+    estimateMode?: "auto" | "official" | "penetration";
+    cashAvailable?: number;
+  },
+  options: {
+    onDelta: (text: string) => void;
+    onEvent?: (event: string, data: string) => void;
+  },
+): Promise<void> {
+  return ssePost(
+    "/api/v1/agent/chat/stream",
+    {
+      conversation_id: payload.conversationId ?? "",
+      message: payload.message,
+      mode: payload.mode,
+      fund_id: payload.fundId ?? "",
+      estimate_mode: payload.estimateMode ?? "auto",
+      cash_available: payload.cashAvailable ?? 0,
+    },
+    options,
+  );
+}
+
+export async function requestAssistantStream(
+  payload: {
+    fundId?: string;
+    question: string;
+    estimateMode?: "auto" | "official" | "penetration";
+  },
+  options: {
+    onDelta: (text: string) => void;
+    onEvent?: (event: string, data: string) => void;
+  },
+): Promise<void> {
+  return ssePost(
+    "/api/v1/assistant/ask/stream",
+    {
+      fund_id: payload.fundId ?? "",
+      cash_available: 0,
+      question: payload.question,
+      estimate_mode: payload.estimateMode,
+    },
+    options,
+  );
 }

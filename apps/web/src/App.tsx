@@ -42,6 +42,14 @@ import {
   requestAutostart,
   updateAutostart,
   requestAppVersion,
+  requestAgentConversations,
+  createAgentConversation,
+  renameAgentConversation,
+  deleteAgentConversation,
+  resetAgentConversation,
+  requestAgentMessages,
+  requestAgentChatStream,
+  setAgentConversationMode,
 } from "./lib/api";
 import {
   formatCurrency,
@@ -89,6 +97,8 @@ import type {
   WatchlistIntradayItem,
   WatchlistItem,
 } from "./types";
+
+import type { AgentConversationView, AgentMode, AgentMessage } from "./lib/api";
 
 type ChatMessage = {
   id: string;
@@ -675,6 +685,13 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+
+  const [agentSupported, setAgentSupported] = useState<boolean | null>(null);
+  const [agentConversations, setAgentConversations] = useState<AgentConversationView[]>([]);
+  const [agentConversationId, setAgentConversationId] = useState("");
+  const [agentMode, setAgentMode] = useState<AgentMode>("auto");
+  const [agentSummary, setAgentSummary] = useState("");
+  const [agentConvoLoading, setAgentConvoLoading] = useState(false);
   const [holdingFirstSeenAtMap, setHoldingFirstSeenAtMap] = useState<Record<string, number>>(() => restoreHoldingFirstSeenAt());
   const [activeFundId, setActiveFundId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
@@ -1576,19 +1593,141 @@ export default function App() {
     }
   }
 
+  function mapAgentMessagesToChat(items: AgentMessage[]): ChatMessage[] {
+    return (items ?? []).map((item, index) => ({
+      id: `${item.ts_ms}-${index}`,
+      role: item.role,
+      text: item.text,
+    }));
+  }
+
+  async function loadAgentConversation(id: string) {
+    const payload = await requestAgentMessages(id);
+    setAgentSummary(String(payload.summary ?? ""));
+    setAgentMode((payload.mode ?? agentMode) || "auto");
+    setChatMessages(mapAgentMessagesToChat(payload.items ?? []));
+  }
+
+  async function bootstrapAgent(preferId?: string): Promise<string | null> {
+    if (agentSupported === false) return null;
+
+    setAgentConvoLoading(true);
+    try {
+      const payload = await requestAgentConversations();
+      const items = payload.items ?? [];
+      setAgentSupported(true);
+      setAgentConversations(items);
+
+      let id = (preferId ?? agentConversationId).trim();
+      if (!id) id = items[0]?.id ?? "";
+      if (!id) {
+        const created = await createAgentConversation({ title: "默认对话", mode: "auto" });
+        setAgentConversations([created]);
+        id = created.id;
+      }
+
+      setAgentConversationId(id);
+      await loadAgentConversation(id);
+      return id;
+    } catch {
+      setAgentSupported(false);
+      return null;
+    } finally {
+      setAgentConvoLoading(false);
+    }
+  }
+
+  async function handleCreateConversation() {
+    try {
+      const created = await createAgentConversation({ title: "新对话", mode: "auto" });
+      setAgentConversations((current) => [created, ...current]);
+      setAgentConversationId(created.id);
+      await loadAgentConversation(created.id);
+    } catch {
+      setPageNotice("创建对话失败（当前可能不是桌面端）。");
+    }
+  }
+
+  async function handleRenameConversation() {
+    const id = agentConversationId.trim();
+    if (!id) return;
+    const currentTitle = agentConversations.find((item) => item.id === id)?.title || "";
+    const nextTitle = window.prompt("重命名对话", currentTitle) || "";
+    if (!nextTitle.trim()) return;
+
+    try {
+      const updated = await renameAgentConversation(id, nextTitle.trim());
+      setAgentConversations((current) => current.map((item) => (item.id === id ? updated : item)));
+    } catch {
+      setPageNotice("重命名失败。");
+    }
+  }
+
+  async function handleDeleteConversation() {
+    const id = agentConversationId.trim();
+    if (!id) return;
+    const confirmed = window.confirm("确定删除当前对话吗？");
+    if (!confirmed) return;
+
+    try {
+      await deleteAgentConversation(id);
+      const remaining = agentConversations.filter((item) => item.id !== id);
+      setAgentConversations(remaining);
+      const nextId = remaining[0]?.id;
+      if (nextId) {
+        setAgentConversationId(nextId);
+        await loadAgentConversation(nextId);
+      } else {
+        setAgentConversationId("");
+        setChatMessages([]);
+      }
+    } catch {
+      setPageNotice("删除失败。");
+    }
+  }
+
+  async function handleResetConversation() {
+    const id = agentConversationId.trim();
+    if (!id) return;
+    const confirmed = window.confirm("确定清空当前对话的记忆/消息吗？");
+    if (!confirmed) return;
+
+    try {
+      await resetAgentConversation(id);
+      await loadAgentConversation(id);
+    } catch {
+      setPageNotice("重置失败。");
+    }
+  }
+
+  async function handleChangeConversation(id: string) {
+    const next = (id || "").trim();
+    if (!next) return;
+    setAgentConversationId(next);
+    try {
+      await loadAgentConversation(next);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleChangeAgentMode(nextMode: AgentMode) {
+    setAgentMode(nextMode);
+    const id = agentConversationId.trim();
+    if (!id) return;
+
+    try {
+      const updated = await setAgentConversationMode(id, nextMode);
+      setAgentConversations((current) => current.map((item) => (item.id === id ? updated : item)));
+    } catch {
+      // ignore
+    }
+  }
+
   async function ask(questionText?: string, fundId?: string) {
     const cleanQuestion = (questionText ?? question).trim();
     const portfolioQuestion = isPortfolioQuestion(cleanQuestion);
     const targetFundId = fundId ?? activeFundId ?? positions[0]?.fund_id ?? "";
-
-    if (!positions.length) {
-      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先导入持仓，再开始分析。" }]);
-      return;
-    }
-    if (!portfolioQuestion && !targetFundId) {
-      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先选择基金，再开始分析。" }]);
-      return;
-    }
 
     if (!cleanQuestion) return;
 
@@ -1597,6 +1736,52 @@ export default function App() {
 
     const assistantMessageId = crypto.randomUUID();
     setChatMessages((current) => [...current, { id: assistantMessageId, role: "assistant", text: "" }]);
+
+    const hintFundId = portfolioQuestion ? "" : targetFundId;
+
+    // Try new Agent backend first (desktop-only). If not available, fallback to legacy assistant.
+    if (agentSupported !== false) {
+      const convoId = agentConversationId || (await bootstrapAgent());
+      if (convoId) {
+        try {
+          await requestAgentChatStream(
+            {
+              conversationId: convoId,
+              message: cleanQuestion,
+              mode: agentMode,
+              fundId: hintFundId,
+              estimateMode,
+              cashAvailable: 0,
+            },
+            {
+              onDelta: (text) => {
+                setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: `${item.text}${text}` } : item)));
+              },
+            },
+          );
+
+          setQuestion("");
+          await loadAgentConversation(convoId);
+          setAssistantLoading(false);
+          return;
+        } catch (error) {
+          setAgentSupported(false);
+          setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: error instanceof Error ? error.message : "Agent 暂时不可用，已回退到兼容模式。" } : item)));
+        }
+      }
+    }
+
+    // Legacy assistant: finance-only.
+    if (!positions.length) {
+      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先导入持仓，再开始分析。" }]);
+      setAssistantLoading(false);
+      return;
+    }
+    if (!portfolioQuestion && !targetFundId) {
+      setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "请先选择基金，再开始分析。" }]);
+      setAssistantLoading(false);
+      return;
+    }
 
     try {
       await requestAssistantStream(
@@ -1642,6 +1827,11 @@ export default function App() {
       setAssistantLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!assistantOpen) return;
+    void bootstrapAgent();
+  }, [assistantOpen]);
 
   async function saveDesktopLlmConfig() {
     setLlmConfigNotice("");
@@ -1884,7 +2074,6 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         setAssistantOpen(true);
-                        void ask();
                       }}
                       className={BTN_XS_PURPLE}
                       disabled={assistantLoading}
@@ -1983,13 +2172,55 @@ export default function App() {
                       <div className="flex items-center">
                         <div className="bg-gradient-to-br from-blue-500 to-purple-600 text-white p-2 rounded-lg mr-3 shadow-sm"><BrainCircuit className="h-4 w-4" /></div>
                         <div>
-                          <h2 className="text-md font-bold text-gray-800">金融分析 Agent</h2>
-                          <p className="text-[11px] text-gray-500 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-green-500 mr-1 animate-pulse"></span>联网与深度投研</p>
+                          <h2 className="text-md font-bold text-gray-800">FundSight Agent</h2>
+                          <p className="text-[11px] text-gray-500 flex items-center"><span className={`w-1.5 h-1.5 rounded-full mr-1 ${agentSupported === false ? "bg-rose-500" : "bg-green-500"} animate-pulse`}></span>{agentSupported === false ? "兼容模式" : "多会话/记忆"}</p>
                         </div>
                       </div>
                       <button type="button" onClick={() => setAssistantOpen(false)} className="text-gray-500 hover:text-gray-800 p-1 rounded" aria-label="关闭">
                         <X className="h-4 w-4" />
                       </button>
+                    </div>
+
+                    <div className="px-4 py-3 border-b border-gray-100 bg-white">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={agentConversationId}
+                          onChange={(event) => void handleChangeConversation(event.target.value)}
+                          className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                          disabled={agentConvoLoading || agentSupported === false}
+                          title={agentSupported === false ? "当前为兼容模式（桌面端 agent 接口不可用）" : "选择对话"}
+                        >
+                          {agentConversations.length ? null : <option value="">（暂无对话）</option>}
+                          {agentConversations.map((item) => (
+                            <option key={item.id} value={item.id}>{item.title || item.id}</option>
+                          ))}
+                        </select>
+                        <button type="button" onClick={() => void handleCreateConversation()} className={BTN_XS_GRAY} disabled={agentSupported === false}>新建</button>
+                        <button type="button" onClick={() => void handleRenameConversation()} className={BTN_XS_GRAY} disabled={agentSupported === false || !agentConversationId}>改名</button>
+                        <button type="button" onClick={() => void handleResetConversation()} className={BTN_XS_GRAY} disabled={agentSupported === false || !agentConversationId}>清空</button>
+                        <button type="button" onClick={() => void handleDeleteConversation()} className={BTN_XS_DANGER} disabled={agentSupported === false || !agentConversationId}>删除</button>
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-gray-500">模式</div>
+                        <select
+                          value={agentMode}
+                          onChange={(event) => void handleChangeAgentMode(event.target.value as AgentMode)}
+                          className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs"
+                          disabled={agentSupported === false || !agentConversationId}
+                        >
+                          <option value="auto">自动</option>
+                          <option value="invest">投研</option>
+                          <option value="chat">闲聊</option>
+                        </select>
+                      </div>
+
+                      {agentSummary ? (
+                        <div className="mt-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-[11px] text-gray-600 whitespace-pre-line">
+                          <div className="font-semibold text-gray-700 mb-1">对话摘要</div>
+                          {agentSummary}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="flex-1 p-4 overflow-y-auto no-scrollbar flex flex-col space-y-4 bg-gray-50/50">

@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, Method, Request, StatusCode, Uri},
     response::{sse::Event, IntoResponse, Response, Sse},
-    routing::{any, get, post},
+    routing::{any, delete, get, post},
     Json, Router,
 };
 use bytes::Bytes;
@@ -19,6 +19,8 @@ use std::{
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{Any, CorsLayer};
+
+mod agent;
 
 #[cfg(target_os = "windows")]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -69,8 +71,15 @@ pub struct LlmConfigUpdate {
 #[derive(Clone)]
 struct AppState {
     config_path: PathBuf,
+
+    // Legacy assistant state (kept for migration/back-compat).
     assistant_state_path: PathBuf,
     assistant_state: Arc<RwLock<AssistantState>>,
+
+    // New agent runtime.
+    agent_root: PathBuf,
+    agent_store: Arc<RwLock<agent::AgentStore>>,
+
     llm: Arc<RwLock<LlmConfig>>,
     http: reqwest::Client,
 }
@@ -1260,13 +1269,26 @@ fn spawn_api_server() {
     let assistant_state_path = config_dir.join("assistant_state.json");
     let assistant_initial = load_assistant_state(&assistant_state_path);
 
+    let agent_root = config_dir.clone();
+    let agent_store = agent::AgentStore::load(&agent_root);
+
     let state = Arc::new(AppState {
         config_path,
         assistant_state_path,
         assistant_state: Arc::new(RwLock::new(assistant_initial)),
+        agent_root,
+        agent_store: Arc::new(RwLock::new(agent_store)),
         llm: Arc::new(RwLock::new(initial)),
         http: reqwest::Client::new(),
     });
+
+    // Migrate legacy assistant_state.json into a default conversation if needed.
+    {
+        let state2 = state.clone();
+        tauri::async_runtime::spawn(async move {
+            agent::migrate_legacy_assistant_state_if_needed(&state2).await;
+        });
+    }
 
     tauri::async_runtime::spawn(async move {
         let cors = CorsLayer::new()
@@ -1285,6 +1307,34 @@ fn spawn_api_server() {
             .route("/api/v1/assistant/ask", post(assistant_ask))
             .route("/api/v1/assistant/ask/stream", post(assistant_ask_stream))
             .route("/api/v1/assistant/memory/reset", post(assistant_memory_reset))
+
+            // Agent runtime (multi-conversation + modes)
+            .route(
+                "/api/v1/agent/conversations",
+                get(agent::list_conversations).post(agent::create_conversation),
+            )
+            .route(
+                "/api/v1/agent/conversations/{id}/rename",
+                post(agent::rename_conversation),
+            )
+            .route(
+                "/api/v1/agent/conversations/{id}/mode",
+                post(agent::set_conversation_mode),
+            )
+            .route(
+                "/api/v1/agent/conversations/{id}",
+                delete(agent::delete_conversation),
+            )
+            .route(
+                "/api/v1/agent/conversations/{id}/messages",
+                get(agent::get_messages),
+            )
+            .route(
+                "/api/v1/agent/conversations/{id}/reset",
+                post(agent::reset_conversation),
+            )
+            .route("/api/v1/agent/chat/stream", post(agent::chat_stream))
+
             .route("/api/v1/{*path}", any(proxy_to_upstream))
             .layer(cors)
             .with_state(state);
