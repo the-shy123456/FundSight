@@ -9,7 +9,7 @@ use axum::{
 use bytes::Bytes;
 use futures::{stream::BoxStream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
@@ -69,6 +69,8 @@ pub struct LlmConfigUpdate {
 #[derive(Clone)]
 struct AppState {
     config_path: PathBuf,
+    assistant_state_path: PathBuf,
+    assistant_state: Arc<RwLock<AssistantState>>,
     llm: Arc<RwLock<LlmConfig>>,
     http: reqwest::Client,
 }
@@ -103,6 +105,202 @@ fn save_llm_config(path: &FsPath, config: &LlmConfig) -> Result<(), String> {
         serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
     std::fs::write(path, content).map_err(|e| format!("写入配置失败: {e}"))?;
     Ok(())
+}
+
+const ASSISTANT_HISTORY_LIMIT: usize = 24;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PendingActionKind {
+    ClearWatchlist,
+    ClearHoldings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingAction {
+    kind: PendingActionKind,
+    created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AssistantTurn {
+    role: String,
+    text: String,
+    ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AssistantState {
+    #[serde(default)]
+    history: Vec<AssistantTurn>,
+    #[serde(default)]
+    pending_action: Option<PendingAction>,
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn load_assistant_state(path: &FsPath) -> AssistantState {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => AssistantState::default(),
+    }
+}
+
+fn save_assistant_state(path: &FsPath, state: &AssistantState) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let content = serde_json::to_string_pretty(state).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(path, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(())
+}
+
+fn is_confirm(text: &str) -> bool {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return false;
+    }
+    clean == "确认"
+        || clean == "确定"
+        || clean == "OK"
+        || clean == "ok"
+        || clean == "yes"
+        || clean.contains("确认")
+        || clean.contains("确定")
+}
+
+fn is_cancel(text: &str) -> bool {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return false;
+    }
+    clean == "取消" || clean.contains("取消") || clean.contains("算了") || clean.contains("不用了")
+}
+
+fn extract_six_digit_code(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let len = j.saturating_sub(start);
+            if len >= 6 {
+                // Take the first 6 digits.
+                let code = &text[start..start + 6];
+                return Some(code.to_string());
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn truncate_string_chars(input: &str, max_chars: usize) -> String {
+    let mut iter = input.chars();
+    let mut out = String::new();
+    for _ in 0..max_chars {
+        if let Some(ch) = iter.next() {
+            out.push(ch);
+        } else {
+            break;
+        }
+    }
+    if input.chars().count() > max_chars {
+        out.push_str("…");
+    }
+    out
+}
+
+fn pretty_json_truncated(value: &Value, max_chars: usize) -> String {
+    let raw = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string());
+    truncate_string_chars(&raw, max_chars)
+}
+
+async fn upstream_get_json(http: &reqwest::Client, path_and_query: &str) -> Result<Value, String> {
+    let url = format!("{UPSTREAM_BASE}{path_and_query}");
+    let resp = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("请求上游失败: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("上游返回错误: {status} {text}"));
+    }
+
+    serde_json::from_str(&text).map_err(|e| format!("解析上游 JSON 失败: {e}"))
+}
+
+async fn upstream_post_json(http: &reqwest::Client, path: &str, body: Value) -> Result<Value, String> {
+    let url = format!("{UPSTREAM_BASE}{path}");
+    let resp = http
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求上游失败: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("上游返回错误: {status} {text}"));
+    }
+
+    serde_json::from_str(&text).map_err(|e| format!("解析上游 JSON 失败: {e}"))
+}
+
+async fn upstream_delete_json(http: &reqwest::Client, path: &str) -> Result<Value, String> {
+    let url = format!("{UPSTREAM_BASE}{path}");
+    let resp = http
+        .delete(url)
+        .send()
+        .await
+        .map_err(|e| format!("请求上游失败: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("上游返回错误: {status} {text}"));
+    }
+
+    serde_json::from_str(&text).map_err(|e| format!("解析上游 JSON 失败: {e}"))
+}
+
+const PORTFOLIO_QUESTION_KEYWORDS: &[&str] = &[
+    "组合",
+    "持仓",
+    "这几只",
+    "几只基金",
+    "几只",
+    "全部",
+    "全仓",
+    "所有基金",
+    "全部基金",
+    "我持仓",
+    "我的基金",
+    "仓位",
+];
+
+fn is_portfolio_question(text: &str) -> bool {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return false;
+    }
+    PORTFOLIO_QUESTION_KEYWORDS.iter().any(|k| clean.contains(k))
 }
 
 fn keyring_entry() -> keyring::Entry {
@@ -247,6 +445,20 @@ async fn get_app_version() -> impl IntoResponse {
         product_name: "FundSight".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+async fn assistant_memory_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut memory = state.assistant_state.write().await;
+    *memory = AssistantState::default();
+    if let Err(message) = save_assistant_state(&state.assistant_state_path, &memory) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": message })),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
 
 async fn update_llm_config(
@@ -597,11 +809,122 @@ async fn assistant_ask_stream(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AssistantAskPayload>,
 ) -> impl IntoResponse {
+    fn sse_simple(text: String) -> Response {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(8);
+        tauri::async_runtime::spawn(async move {
+            let _ = tx
+                .send(Ok(Event::default().event("delta").data(text)))
+                .await;
+            let _ = tx
+                .send(Ok(Event::default().event("done").data("done")))
+                .await;
+        });
+
+        Sse::new(ReceiverStream::new(rx))
+            .keep_alive(
+                axum::response::sse::KeepAlive::new()
+                    .interval(Duration::from_secs(15))
+                    .text("ping"),
+            )
+            .into_response()
+    }
+
+    let question = payload.question.trim().to_string();
+    if question.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "message": "问题不能为空" })),
+        )
+            .into_response();
+    }
+
+    // 1) Pending destructive actions (require confirmation).
+    let pending = { state.assistant_state.read().await.pending_action.clone() };
+    if let Some(pending) = pending {
+        if is_cancel(&question) {
+            let mut memory = state.assistant_state.write().await;
+            memory.pending_action = None;
+            let _ = save_assistant_state(&state.assistant_state_path, &memory);
+            return sse_simple("已取消。".to_string());
+        }
+
+        if is_confirm(&question) {
+            let mut memory = state.assistant_state.write().await;
+            memory.pending_action = None;
+            let _ = save_assistant_state(&state.assistant_state_path, &memory);
+            drop(memory);
+
+            let result_text = match pending.kind {
+                PendingActionKind::ClearWatchlist => {
+                    match upstream_delete_json(&state.http, "/api/v1/watchlist").await {
+                        Ok(_) => "已清空自选。你切到【自选】页刷新即可。".to_string(),
+                        Err(message) => format!("清空自选失败：{message}"),
+                    }
+                }
+                PendingActionKind::ClearHoldings => {
+                    match upstream_delete_json(&state.http, "/api/v1/holdings").await {
+                        Ok(_) => "已清空持仓。".to_string(),
+                        Err(message) => format!("清空持仓失败：{message}"),
+                    }
+                }
+            };
+
+            return sse_simple(result_text);
+        }
+    }
+
+    // 2) Intent shortcuts (basic "agent actions").
+    if question.contains("清空自选") {
+        let mut memory = state.assistant_state.write().await;
+        memory.pending_action = Some(PendingAction {
+            kind: PendingActionKind::ClearWatchlist,
+            created_at_ms: now_ms(),
+        });
+        let _ = save_assistant_state(&state.assistant_state_path, &memory);
+        return sse_simple("将清空【自选】列表。回复「确认」执行，回复「取消」撤销。".to_string());
+    }
+
+    if question.contains("清空持仓") || question.contains("清空组合") {
+        let mut memory = state.assistant_state.write().await;
+        memory.pending_action = Some(PendingAction {
+            kind: PendingActionKind::ClearHoldings,
+            created_at_ms: now_ms(),
+        });
+        let _ = save_assistant_state(&state.assistant_state_path, &memory);
+        return sse_simple("将清空【持仓】数据。回复「确认」执行，回复「取消」撤销。".to_string());
+    }
+
+    if (question.contains("加入自选") || question.contains("添加自选")) {
+        if let Some(code) = extract_six_digit_code(&question) {
+            let body = json!({ "fund_id": code });
+            let result = upstream_post_json(&state.http, "/api/v1/watchlist", body).await;
+            return match result {
+                Ok(value) => {
+                    let fund_id = value.get("fund_id").and_then(|v| v.as_str()).unwrap_or("--");
+                    sse_simple(format!("已加入自选：{fund_id}。你切到【自选】页刷新即可。"))
+                }
+                Err(message) => sse_simple(format!("加入自选失败：{message}")),
+            };
+        }
+    }
+
+    if (question.contains("移除自选") || question.contains("取消自选")) {
+        if let Some(code) = extract_six_digit_code(&question) {
+            let path = format!("/api/v1/watchlist/{code}");
+            let result = upstream_delete_json(&state.http, &path).await;
+            return match result {
+                Ok(_) => sse_simple(format!("已从自选移除：{code}。你切到【自选】页刷新即可。")),
+                Err(message) => sse_simple(format!("移除自选失败：{message}")),
+            };
+        }
+    }
+
+    // 3) LLM config + API key.
     let cfg = state.llm.read().await.clone();
     if cfg.base_url.trim().is_empty() || cfg.model.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "message": "请先在【模型配置】里填写协议/地址/模型并保存" })),
+            Json(json!({ "message": "请先在【设置 → AI】里填写协议/地址/模型并保存" })),
         )
             .into_response();
     }
@@ -613,18 +936,126 @@ async fn assistant_ask_stream(
         }
     };
 
+    // 4) Persist short-term memory (last turns).
+    {
+        let mut memory = state.assistant_state.write().await;
+        memory.history.push(AssistantTurn {
+            role: "user".to_string(),
+            text: question.clone(),
+            ts_ms: now_ms(),
+        });
+        if memory.history.len() > ASSISTANT_HISTORY_LIMIT {
+            let start = memory.history.len() - ASSISTANT_HISTORY_LIMIT;
+            memory.history = memory.history[start..].to_vec();
+        }
+        let _ = save_assistant_state(&state.assistant_state_path, &memory);
+    }
+
+    // 5) Build a context bundle from local upstream APIs.
+    let estimate_mode = payload.estimate_mode.trim();
+    let fund_id = payload.fund_id.trim();
+
+    let selected_code = if !fund_id.is_empty() {
+        Some(fund_id.to_string())
+    } else {
+        extract_six_digit_code(&question)
+    };
+
+    let mut ctx = json!({
+        "estimate_mode": estimate_mode,
+        "fund_id": fund_id,
+        "cash_available": payload.cash_available,
+    });
+
+    if let Ok(portfolio) = upstream_get_json(&state.http, &format!("/api/v1/portfolio?estimate_mode={}", estimate_mode)).await {
+        let summary = portfolio.get("summary").cloned().unwrap_or(json!({}));
+        let mut positions: Vec<Value> = portfolio
+            .get("positions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if positions.len() > 10 {
+            positions.truncate(10);
+        }
+        ctx["portfolio"] = json!({
+            "as_of": portfolio.get("as_of").cloned().unwrap_or(json!("")),
+            "summary": summary,
+            "positions_top": positions,
+            "disclaimer": portfolio.get("disclaimer").cloned().unwrap_or(json!("")),
+        });
+    }
+
+    if let Some(code) = selected_code.clone() {
+        if let Ok(estimate) = upstream_get_json(
+            &state.http,
+            &format!("/api/v1/funds/{}/intraday-estimate?estimate_mode={}", code, estimate_mode),
+        )
+        .await
+        {
+            ctx["fund_estimate"] = estimate;
+        }
+
+        if let Ok(top_holdings) = upstream_get_json(
+            &state.http,
+            &format!("/api/v1/funds/{}/top-holdings?limit=10", code),
+        )
+        .await
+        {
+            ctx["fund_top_holdings"] = top_holdings;
+        }
+
+        if let Ok(nav_trend) = upstream_get_json(
+            &state.http,
+            &format!("/api/v1/funds/{}/nav-trend?range=6m", code),
+        )
+        .await
+        {
+            // Avoid huge prompts: only keep last 60 points.
+            let mut points: Vec<Value> = nav_trend
+                .get("points")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if points.len() > 60 {
+                points = points[points.len() - 60..].to_vec();
+            }
+            ctx["fund_nav_trend_tail"] = json!({
+                "fund_id": nav_trend.get("fund_id").cloned().unwrap_or(json!(code)),
+                "range": nav_trend.get("range").cloned().unwrap_or(json!("6m")),
+                "points": points,
+            });
+        }
+    }
+
+    let history_text = {
+        let memory = state.assistant_state.read().await;
+        let turns = memory.history.iter().rev().take(8).cloned().collect::<Vec<_>>();
+        let mut lines: Vec<String> = vec![];
+        for turn in turns.into_iter().rev() {
+            let role = if turn.role == "assistant" { "助手" } else { "用户" };
+            lines.push(format!("{role}: {}", turn.text));
+        }
+        lines.join("\n")
+    };
+
+    let ctx_text = pretty_json_truncated(&ctx, 6000);
+
     let prompt = format!(
-        "问题：{}\n\n补充：estimate_mode={} fund_id={} cash_available={}\n\n请给出简洁可执行的建议。",
-        payload.question.trim(),
-        payload.estimate_mode,
-        payload.fund_id,
-        payload.cash_available
+        "你是 FundSight 的【投资助理】（桌面端）。你的目标是：结合给定的本地数据，给出【可执行、稳健、可复盘】的建议。\n\n规则：\n- 不要编造数据；不确定就说不确定，并告诉我需要什么信息。\n- 输出结构：①结论（1-3 条）②依据（引用下方数据点/时间）③行动建议（分批/止盈止损/观察条件）④风险提示。\n- 如果用户问的是【组合/持仓】问题：优先给组合层面的结论，并点名贡献最大的 1-3 只基金。\n- 如果用户问的是【单只基金】问题：结合估值、净值趋势、前十大持仓给建议。\n- 不要输出 JSON。\n\n【对话记忆（最近）】\n{history_text}\n\n【用户问题】\n{question}\n\n【已知数据（JSON，仅供你参考）】\n{ctx_text}\n\n请开始回答："
     );
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     let client = state.http.clone();
+    let assistant_state = state.assistant_state.clone();
+    let assistant_state_path = state.assistant_state_path.clone();
 
     tauri::async_runtime::spawn(async move {
+        let _ = tx
+            .send(Ok(Event::default().event("delta").data(
+                "（已读取本地持仓/估值数据，正在生成建议…）\n".to_string(),
+            )))
+            .await;
+
         let result = match cfg.protocol {
             LlmProtocol::Openai_compatible => {
                 openai_stream(client, cfg.base_url, cfg.model, api_key, prompt).await
@@ -639,10 +1070,12 @@ async fn assistant_ask_stream(
 
         match result {
             Ok(mut stream) => {
+                let mut full = String::new();
                 while let Some(item) = futures::StreamExt::next(&mut stream).await {
                     let item: Result<String, String> = item;
                     match item {
                         Ok(delta) => {
+                            full.push_str(&delta);
                             let _ = tx
                                 .send(Ok(Event::default().event("delta").data(delta)))
                                 .await;
@@ -655,6 +1088,21 @@ async fn assistant_ask_stream(
                         }
                     }
                 }
+
+                if !full.trim().is_empty() {
+                    let mut memory = assistant_state.write().await;
+                    memory.history.push(AssistantTurn {
+                        role: "assistant".to_string(),
+                        text: truncate_string_chars(full.trim(), 2000),
+                        ts_ms: now_ms(),
+                    });
+                    if memory.history.len() > ASSISTANT_HISTORY_LIMIT {
+                        let start = memory.history.len() - ASSISTANT_HISTORY_LIMIT;
+                        memory.history = memory.history[start..].to_vec();
+                    }
+                    let _ = save_assistant_state(&assistant_state_path, &memory);
+                }
+
                 let _ = tx
                     .send(Ok(Event::default().event("done").data("done")))
                     .await;
@@ -809,8 +1257,13 @@ fn spawn_api_server() {
     let config_path = config_dir.join("llm_config.json");
     let initial = load_llm_config(&config_path);
 
+    let assistant_state_path = config_dir.join("assistant_state.json");
+    let assistant_initial = load_assistant_state(&assistant_state_path);
+
     let state = Arc::new(AppState {
         config_path,
+        assistant_state_path,
+        assistant_state: Arc::new(RwLock::new(assistant_initial)),
         llm: Arc::new(RwLock::new(initial)),
         http: reqwest::Client::new(),
     });
@@ -831,6 +1284,7 @@ fn spawn_api_server() {
             .route("/api/v1/app/version", get(get_app_version))
             .route("/api/v1/assistant/ask", post(assistant_ask))
             .route("/api/v1/assistant/ask/stream", post(assistant_ask_stream))
+            .route("/api/v1/assistant/memory/reset", post(assistant_memory_reset))
             .route("/api/v1/{*path}", any(proxy_to_upstream))
             .layer(cors)
             .with_state(state);
