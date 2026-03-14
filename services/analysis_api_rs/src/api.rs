@@ -36,7 +36,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/holdings", delete(delete_holdings_all))
         .route("/api/v1/holdings/{fund_id}", delete(delete_holding_id))
         .route("/api/v1/assistant/ask", post(post_assistant_ask))
-        .route("/api/v1/watchlist", get(get_watchlist).post(post_watchlist))
+        .route(
+            "/api/v1/watchlist",
+            get(get_watchlist)
+                .post(post_watchlist)
+                .delete(delete_watchlist_all),
+        )
         .route("/api/v1/watchlist/intraday", get(get_watchlist_intraday))
         .route("/api/v1/watchlist/{fund_id}", delete(delete_watchlist_id))
         .route("/api/v1/funds", get(get_funds_catalog))
@@ -488,6 +493,17 @@ async fn post_watchlist(Json(body): Json<WatchlistAddBody>) -> impl IntoResponse
 async fn delete_watchlist_id(Path(fund_id): Path<String>) -> impl IntoResponse {
     match watchlist::remove_watchlist_id(&fund_id) {
         Ok(_) => (StatusCode::OK, Json(json!({ "deleted": true }))).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn delete_watchlist_all() -> impl IntoResponse {
+    match watchlist::save_watchlist(&[]) {
+        Ok(_) => (StatusCode::OK, Json(json!({ "deleted": true, "total": 0 }))).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "message": error.to_string() })),

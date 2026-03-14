@@ -169,6 +169,12 @@ export async function requestWatchlist(): Promise<WatchlistResponse> {
   return fetchJson<WatchlistResponse>("/api/v1/watchlist");
 }
 
+export async function clearWatchlist(): Promise<{ deleted: boolean; total?: number }> {
+  return fetchJson<{ deleted: boolean; total?: number }>("/api/v1/watchlist", {
+    method: "DELETE",
+  });
+}
+
 export async function addToWatchlist(fundId: string): Promise<{ added: boolean; fund_id: string }> {
   return fetchJson<{ added: boolean; fund_id: string }>("/api/v1/watchlist", {
     method: "POST",
@@ -211,6 +217,31 @@ export type LlmConfigView = {
   model: string;
   has_api_key: boolean;
 };
+
+export type AutostartStatus = {
+  supported: boolean;
+  enabled: boolean;
+};
+
+export async function requestAutostart(): Promise<AutostartStatus> {
+  return fetchJson<AutostartStatus>("/api/v1/app/autostart");
+}
+
+export async function updateAutostart(enabled: boolean): Promise<AutostartStatus> {
+  return fetchJson<AutostartStatus>("/api/v1/app/autostart", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export type AppVersionInfo = {
+  product_name: string;
+  version: string;
+};
+
+export async function requestAppVersion(): Promise<AppVersionInfo> {
+  return fetchJson<AppVersionInfo>("/api/v1/app/version");
+}
 
 export async function requestLlmConfig(): Promise<LlmConfigView> {
   return fetchJson<LlmConfigView>("/api/v1/llm/config");

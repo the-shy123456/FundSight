@@ -1,4 +1,4 @@
-import type { AiConfig, AssistantSession, ManualRow } from "../types";
+import type { AiConfig, AppSettings, AssistantSession, ManualRow } from "../types";
 
 export const STORAGE_KEYS = {
   manualRows: "fund-workbench-manual-rows",
@@ -7,6 +7,8 @@ export const STORAGE_KEYS = {
   aiConfigs: "fund-workbench-ai-configs",
   estimateMode: "estimate_mode",
   holdingFirstSeenAt: "fund-workbench-holding-first-seen-at",
+  appSettings: "fundsight-app-settings",
+  lastActiveTab: "fundsight-last-active-tab",
 } as const;
 
 export const DEFAULT_ROWS: ManualRow[] = [
@@ -139,4 +141,55 @@ export function restoreHoldingFirstSeenAt(): Record<string, number> {
 
 export function saveHoldingFirstSeenAt(value: Record<string, number>): void {
   localStorage.setItem(STORAGE_KEYS.holdingFirstSeenAt, JSON.stringify(value));
+}
+
+export function restoreAppSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.appSettings);
+    if (!raw) {
+      return {
+        accent: "blue",
+        theme_mode: "system",
+        font_scale: 1,
+        startup_tab: "last",
+        check_updates_on_startup: true,
+      };
+    }
+
+    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    const accent = parsed.accent === "purple" || parsed.accent === "emerald" || parsed.accent === "blue" ? parsed.accent : "blue";
+    const theme_mode = parsed.theme_mode === "light" || parsed.theme_mode === "dark" || parsed.theme_mode === "system" ? parsed.theme_mode : "system";
+    const font_scale = parsed.font_scale === 0.9 || parsed.font_scale === 1 || parsed.font_scale === 1.1 ? parsed.font_scale : 1;
+    const startup_tab = parsed.startup_tab === "portfolio" || parsed.startup_tab === "watchlist" || parsed.startup_tab === "library" || parsed.startup_tab === "config" || parsed.startup_tab === "last" ? parsed.startup_tab : "last";
+
+    return {
+      accent,
+      theme_mode,
+      font_scale,
+      startup_tab,
+      check_updates_on_startup: Boolean(parsed.check_updates_on_startup ?? true),
+    };
+  } catch {
+    return {
+      accent: "blue",
+      theme_mode: "system",
+      font_scale: 1,
+      startup_tab: "last",
+      check_updates_on_startup: true,
+    };
+  }
+}
+
+export function saveAppSettings(value: AppSettings): void {
+  localStorage.setItem(STORAGE_KEYS.appSettings, JSON.stringify(value));
+}
+
+export function restoreLastActiveTab(): "portfolio" | "watchlist" | "library" | "config" {
+  const raw = (localStorage.getItem(STORAGE_KEYS.lastActiveTab) || "").trim();
+  if (raw === "portfolio" || raw === "watchlist" || raw === "library" || raw === "config") return raw;
+  return "portfolio";
+}
+
+export function saveLastActiveTab(value: "portfolio" | "watchlist" | "library" | "config"): void {
+  localStorage.setItem(STORAGE_KEYS.lastActiveTab, value);
 }

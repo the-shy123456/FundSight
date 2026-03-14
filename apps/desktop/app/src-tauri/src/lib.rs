@@ -20,6 +20,9 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{Any, CorsLayer};
 
+#[cfg(target_os = "windows")]
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
 const API_BIND: &str = "127.0.0.1:18080";
 const UPSTREAM_BASE: &str = "http://127.0.0.1:18081";
 
@@ -134,6 +137,115 @@ async fn get_llm_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
         base_url: cfg.base_url,
         model: cfg.model,
         has_api_key: has_api_key(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AutostartStatus {
+    supported: bool,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AutostartUpdate {
+    enabled: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_run_key() -> Result<RegKey, String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.open_subkey_with_flags(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        winreg::enums::KEY_READ | winreg::enums::KEY_WRITE,
+    )
+    .map_err(|e| format!("打开开机自启注册表失败: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_autostart_value_name() -> &'static str {
+    "FundSight"
+}
+
+#[cfg(target_os = "windows")]
+fn windows_autostart_exe_value() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("读取程序路径失败: {e}"))?;
+    let exe_str = exe
+        .to_str()
+        .ok_or_else(|| "程序路径不是有效 UTF-8".to_string())?;
+    Ok(format!("\"{exe_str}\""))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_is_autostart_enabled() -> Result<bool, String> {
+    let key = windows_run_key()?;
+    let name = windows_autostart_value_name();
+    let current = key.get_value::<String, _>(name).ok();
+    if current.is_none() {
+        return Ok(false);
+    }
+    let expected = windows_autostart_exe_value()?;
+    Ok(current.unwrap_or_default().trim() == expected.trim())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_set_autostart(enabled: bool) -> Result<(), String> {
+    let key = windows_run_key()?;
+    let name = windows_autostart_value_name();
+    if enabled {
+        let value = windows_autostart_exe_value()?;
+        key.set_value(name, &value)
+            .map_err(|e| format!("设置开机自启失败: {e}"))?;
+        return Ok(());
+    }
+
+    // Disable: delete value if exists.
+    let _ = key.delete_value(name);
+    Ok(())
+}
+
+async fn get_autostart() -> impl IntoResponse {
+    #[cfg(target_os = "windows")]
+    {
+        let enabled = windows_is_autostart_enabled().unwrap_or(false);
+        return (StatusCode::OK, Json(AutostartStatus { supported: true, enabled })).into_response();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        (StatusCode::OK, Json(AutostartStatus { supported: false, enabled: false })).into_response()
+    }
+}
+
+async fn update_autostart(Json(payload): Json<AutostartUpdate>) -> impl IntoResponse {
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(message) = windows_set_autostart(payload.enabled) {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
+        }
+        let enabled = windows_is_autostart_enabled().unwrap_or(payload.enabled);
+        return (StatusCode::OK, Json(AutostartStatus { supported: true, enabled })).into_response();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "message": "当前平台不支持开机自启" })),
+        )
+            .into_response()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AppVersionInfo {
+    product_name: String,
+    version: String,
+}
+
+async fn get_app_version() -> impl IntoResponse {
+    Json(AppVersionInfo {
+        product_name: "FundSight".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
@@ -715,6 +827,8 @@ fn spawn_api_server() {
                 "/api/v1/llm/config",
                 get(get_llm_config).post(update_llm_config),
             )
+            .route("/api/v1/app/autostart", get(get_autostart).post(update_autostart))
+            .route("/api/v1/app/version", get(get_app_version))
             .route("/api/v1/assistant/ask", post(assistant_ask))
             .route("/api/v1/assistant/ask/stream", post(assistant_ask_stream))
             .route("/api/v1/{*path}", any(proxy_to_upstream))

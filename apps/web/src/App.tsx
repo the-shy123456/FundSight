@@ -12,11 +12,16 @@ import {
   Sparkles,
   UploadCloud,
   X,
+  Settings2,
+  Palette,
+  Info,
+  ArrowUpRight,
 } from "lucide-react";
 import {
   addToWatchlist,
   buildImportTextFromRows,
   removeFromWatchlist,
+  clearWatchlist,
   requestIntradayEstimate,
   requestAssistant,
   requestAssistantStream,
@@ -34,6 +39,9 @@ import {
   requestWatchlistIntraday,
   requestLlmConfig,
   saveLlmConfig,
+  requestAutostart,
+  updateAutostart,
+  requestAppVersion,
 } from "./lib/api";
 import {
   formatCurrency,
@@ -52,16 +60,21 @@ import {
   restoreEstimateMode,
   restoreHoldingFirstSeenAt,
   restoreManualRows,
+  restoreAppSettings,
+  restoreLastActiveTab,
   saveAiConfigs,
   saveAssistantQuestion,
   saveEstimateMode,
   saveHoldingFirstSeenAt,
   saveManualRows,
+  saveAppSettings,
+  saveLastActiveTab,
 } from "./lib/storage";
 import type {
   AiConfig,
   AnnouncementItem,
   AssistantResponse,
+  AppSettings,
   FundCatalogItem,
   ImportTab,
   ManualRow,
@@ -146,9 +159,36 @@ const ANNOUNCEMENT_EVIDENCE_LABEL = "最新公告（东财 fundf10）";
 
 const BTN_XS_BASE = "inline-flex items-center justify-center rounded-md border px-2 py-1 text-[11px] font-medium leading-4 transition-colors disabled:opacity-60 disabled:cursor-not-allowed";
 const BTN_XS_GRAY = `${BTN_XS_BASE} bg-white text-gray-700 border-gray-200 hover:bg-gray-50`;
-const BTN_XS_BLUE = `${BTN_XS_BASE} bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100`;
+// Accent (theme color) uses CSS variables controlled by Settings.
+const BTN_XS_BLUE = `${BTN_XS_BASE} bg-[color:var(--accent-50)] text-[color:var(--accent-700)] border-[color:var(--accent-200)] hover:bg-[color:var(--accent-100)]`;
 const BTN_XS_PURPLE = `${BTN_XS_BASE} bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100`;
 const BTN_XS_DANGER = `${BTN_XS_BASE} bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100`;
+
+type Semver = { major: number; minor: number; patch: number };
+
+function parseSemver(input: string): Semver | null {
+  const match = String(input || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return {
+    major: Number(match[1] || 0),
+    minor: Number(match[2] || 0),
+    patch: Number(match[3] || 0),
+  };
+}
+
+function compareSemver(left: Semver, right: Semver): number {
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  return left.patch - right.patch;
+}
+
+function formatDateTime(iso?: string): string {
+  const value = (iso || "").trim();
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
 
 function isPortfolioQuestion(text: string): boolean {
   const clean = text.trim();
@@ -596,8 +636,13 @@ function buildRelatedFundLabel(item: FundCatalogItem): string {
 export default function App() {
   const initialRows = restoreManualRows();
   const initialConfigs = restoreAiConfigs();
+  const initialSettings = restoreAppSettings();
+  const initialLastTab = restoreLastActiveTab();
+  const initialActiveTab: ViewTab =
+    initialSettings.startup_tab === "last" ? initialLastTab : (initialSettings.startup_tab as ViewTab);
 
-  const [activeTab, setActiveTab] = useState<ViewTab>("portfolio");
+  const [activeTab, setActiveTab] = useState<ViewTab>(initialActiveTab);
+  const [appSettings, setAppSettings] = useState<AppSettings>(initialSettings);
   const [snapshot, setSnapshot] = useState<PortfolioSnapshot | null>(null);
   const [intraday, setIntraday] = useState<PortfolioIntraday | null>(null);
   const [manualRows, setManualRows] = useState<ManualRow[]>(initialRows);
@@ -655,6 +700,18 @@ export default function App() {
   const [themeNotice, setThemeNotice] = useState("");
   const [aiConfigs, setAiConfigs] = useState<AiConfig[]>(initialConfigs);
   const [estimateMode, setEstimateMode] = useState<EstimateMode>(restoreEstimateMode());
+
+  const [settingsSection, setSettingsSection] = useState<"general" | "appearance" | "ai" | "about">("general");
+
+  const [autostartStatus, setAutostartStatus] = useState<{ supported: boolean; enabled: boolean } | null>(null);
+  const [autostartLoading, setAutostartLoading] = useState(false);
+  const [autostartNotice, setAutostartNotice] = useState("");
+
+  const [versionInfo, setVersionInfo] = useState<{ product_name: string; version: string } | null>(null);
+  const [latestRelease, setLatestRelease] = useState<{ tag_name: string; name?: string; html_url: string; published_at?: string } | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<boolean | null>(null);
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState("");
 
   const [llmConfigSupported, setLlmConfigSupported] = useState<boolean | null>(null);
   const [llmConfigLoading, setLlmConfigLoading] = useState(false);
@@ -850,6 +907,48 @@ export default function App() {
   }, [manualRows]);
 
   useEffect(() => {
+    saveAppSettings(appSettings);
+    document.documentElement.dataset.accent = appSettings.accent;
+    document.documentElement.style.fontSize = `${16 * appSettings.font_scale}px`;
+  }, [appSettings]);
+
+  useEffect(() => {
+    const setTheme = (value: "light" | "dark") => {
+      document.documentElement.dataset.theme = value;
+    };
+
+    if (appSettings.theme_mode === "light" || appSettings.theme_mode === "dark") {
+      setTheme(appSettings.theme_mode);
+      return;
+    }
+
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const applySystem = () => setTheme(media?.matches ? "dark" : "light");
+    applySystem();
+
+    if (!media) return;
+    const handler = () => applySystem();
+    media.addEventListener?.("change", handler);
+    return () => media.removeEventListener?.("change", handler);
+  }, [appSettings.theme_mode]);
+
+  useEffect(() => {
+    saveLastActiveTab(activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key !== ",") return;
+      event.preventDefault();
+      setActiveTab("config");
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  useEffect(() => {
     saveAiConfigs(aiConfigs);
   }, [aiConfigs]);
 
@@ -910,6 +1009,8 @@ export default function App() {
     }
 
     void loadDesktopConfig();
+    void refreshAutostartStatus();
+    void loadVersionInfo();
 
     return () => {
       cancelled = true;
@@ -920,6 +1021,14 @@ export default function App() {
     if (activeTab !== "watchlist") return;
     void loadWatchlist();
   }, [activeTab, estimateMode]);
+
+  useEffect(() => {
+    if (!appSettings.check_updates_on_startup) return;
+    const timer = window.setTimeout(() => {
+      void checkForUpdates({ silent: true, toastIfUpdate: true });
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [appSettings.check_updates_on_startup]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1554,6 +1663,111 @@ export default function App() {
     }
   }
 
+  async function refreshAutostartStatus() {
+    setAutostartNotice("");
+    setAutostartLoading(true);
+    try {
+      const payload = await requestAutostart();
+      setAutostartStatus(payload);
+    } catch {
+      setAutostartStatus({ supported: false, enabled: false });
+      setAutostartNotice("仅桌面端（Windows）支持开机自启。");
+    } finally {
+      setAutostartLoading(false);
+    }
+  }
+
+  async function setAutostartEnabled(enabled: boolean) {
+    setAutostartNotice("");
+    setAutostartLoading(true);
+    try {
+      const payload = await updateAutostart(enabled);
+      setAutostartStatus(payload);
+      if (!payload.supported) {
+        setAutostartNotice("当前平台不支持开机自启。");
+      } else {
+        setAutostartNotice(`已${payload.enabled ? "开启" : "关闭"}开机自启。`);
+      }
+    } catch (error) {
+      setAutostartNotice(error instanceof Error ? error.message : "设置失败，请稍后重试。 ");
+    } finally {
+      setAutostartLoading(false);
+    }
+  }
+
+  async function loadVersionInfo() {
+    try {
+      const payload = await requestAppVersion();
+      setVersionInfo(payload);
+      return payload;
+    } catch {
+      setVersionInfo(null);
+      return null;
+    }
+  }
+
+  async function checkForUpdates(options?: { silent?: boolean; toastIfUpdate?: boolean }) {
+    if (updateLoading) return;
+
+    setUpdateNotice("");
+    setUpdateLoading(true);
+    try {
+      const appInfo = (await loadVersionInfo()) ?? versionInfo;
+      if (!appInfo?.version) {
+        throw new Error("当前不是桌面端环境（缺少 /api/v1/app/version）。");
+      }
+
+      const response = await fetch("https://api.github.com/repos/the-shy123456/FundSight/releases/latest", {
+        headers: { Accept: "application/vnd.github+json", "User-Agent": "FundSight" },
+      });
+      if (!response.ok) {
+        throw new Error(`GitHub 请求失败：${response.status}`);
+      }
+
+      const release = (await response.json()) as {
+        tag_name?: string;
+        name?: string;
+        html_url?: string;
+        published_at?: string;
+      };
+
+      const tagName = String(release.tag_name ?? "");
+      const htmlUrl = String(release.html_url ?? "");
+      setLatestRelease({
+        tag_name: tagName,
+        name: release.name,
+        html_url: htmlUrl,
+        published_at: release.published_at,
+      });
+
+      const current = parseSemver(appInfo.version);
+      const latest = parseSemver(tagName);
+      if (!current || !latest) {
+        setUpdateAvailable(null);
+        setUpdateNotice(`无法解析版本号：当前=${appInfo.version}，最新=${tagName}`);
+        return;
+      }
+
+      const hasUpdate = compareSemver(latest, current) > 0;
+      setUpdateAvailable(hasUpdate);
+
+      if (options?.toastIfUpdate && hasUpdate) {
+        setPageNotice(`发现新版本 ${latest.major}.${latest.minor}.${latest.patch}，去「设置 → 关于/更新」下载。`);
+      }
+
+      if (!hasUpdate) {
+        setUpdateNotice(`已是最新版（${appInfo.version}）。`);
+      }
+    } catch (error) {
+      if (!options?.silent) {
+        setUpdateNotice(error instanceof Error ? error.message : "检查更新失败，请稍后重试。 ");
+      }
+      setUpdateAvailable(null);
+    } finally {
+      setUpdateLoading(false);
+    }
+  }
+
   function saveConfig() {
     const name = configForm.name.trim();
     const endpoint = configForm.endpoint.trim();
@@ -1593,7 +1807,7 @@ export default function App() {
                 <LineChart className="h-5 w-5 mr-2" /> AI-Fund Matrix
               </div>
               <div className="ml-10 flex space-x-8">
-                {[["portfolio", "持仓"], ["watchlist", "自选"], ["library", "基金库"], ["config", "模型配置"]].map(([tab, label]) => (
+                {[["portfolio", "持仓"], ["watchlist", "自选"], ["library", "基金库"], ["config", "设置"]].map(([tab, label]) => (
                   <button
                     key={tab}
                     type="button"
@@ -2084,124 +2298,329 @@ export default function App() {
         ) : null}
 
         {activeTab === "config" ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="bg-white p-8 rounded-xl shadow-md border border-gray-100 w-full max-w-2xl relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-blue-500"></div>
-              <div className="flex items-center mb-6 border-b border-gray-100 pb-4">
-                <div className="bg-blue-50 text-blue-600 p-3 rounded-lg mr-4 border border-blue-100"><BrainCircuit className="h-5 w-5" /></div>
-                <div>
-                  <h2 className="text-xl font-bold text-gray-800">AI Agent 大模型配置</h2>
-                  <p className="text-sm text-gray-500 mt-1">桌面端支持协议/地址/API Key/模型的完整配置，并用于流式 AI 分析。</p>
+          <div className="h-full">
+            <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-6">
+              <aside className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <div className="flex items-center gap-2 px-2 py-2">
+                  <Settings2 className="h-4 w-4 text-[color:var(--accent-700)]" />
+                  <div className="font-bold text-gray-900">设置</div>
                 </div>
-              </div>
 
-              {llmConfigSupported === null ? (
-                <div className="text-sm text-gray-500">正在检测桌面端配置能力...</div>
-              ) : llmConfigSupported ? (
-                <div className="space-y-5">
-                  {llmConfigNotice ? <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700 whitespace-pre-line">{llmConfigNotice}</div> : null}
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">接口协议</label>
-                    <select
-                      value={llmProtocol}
-                      onChange={(event) => setLlmProtocol(event.target.value as "openai_compatible" | "openai_responses" | "anthropic_messages")}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50"
-                      disabled={llmConfigLoading}
-                    >
-                      <option value="openai_compatible">OpenAI Chat</option>
-                      <option value="openai_responses">OpenAI Responses</option>
-                      <option value="anthropic_messages">Anthropic</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">接入地址（Base URL）</label>
-                    <input
-                      type="text"
-                      value={llmBaseUrl}
-                      onChange={(event) => setLlmBaseUrl(event.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
-                      placeholder="例如：https://api.openai.com 或你的中转站地址"
-                      disabled={llmConfigLoading}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">模型</label>
-                    <input
-                      type="text"
-                      value={llmModel}
-                      onChange={(event) => setLlmModel(event.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
-                      placeholder="例如：gpt-4.1 / gpt-4o-mini / claude-3-7-sonnet"
-                      disabled={llmConfigLoading}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
-                    <input
-                      type="password"
-                      value={llmApiKey}
-                      onChange={(event) => setLlmApiKey(event.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
-                      placeholder={llmHasKey ? "已保存（留空表示不修改）" : "sk-..."}
-                      disabled={llmConfigLoading}
-                    />
-                    {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已安全保存到系统凭据中（输入一次即可）。</div> : null}
-                  </div>
-
-                  <div className="pt-4 flex justify-end border-t border-gray-100">
+                <div className="mt-3 space-y-1 text-sm">
+                  {([
+                    { key: "general", label: "常规", icon: <Settings2 className="h-4 w-4" /> },
+                    { key: "appearance", label: "外观", icon: <Palette className="h-4 w-4" /> },
+                    { key: "ai", label: "AI", icon: <BrainCircuit className="h-4 w-4" /> },
+                    { key: "about", label: "关于/更新", icon: <Info className="h-4 w-4" /> },
+                  ] as const).map((item) => (
                     <button
+                      key={item.key}
                       type="button"
-                      onClick={() => void saveDesktopLlmConfig()}
-                      className={BTN_XS_BLUE}
-                      disabled={llmConfigLoading}
+                      onClick={() => setSettingsSection(item.key)}
+                      className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 border text-left transition-colors ${settingsSection === item.key ? "bg-[color:var(--accent-50)] border-[color:var(--accent-200)] text-[color:var(--accent-700)]" : "bg-white border-transparent text-gray-600 hover:bg-gray-50"}`}
                     >
-                      {llmConfigLoading ? "保存中..." : "保存配置"}
+                      {item.icon}
+                      <span className="font-medium">{item.label}</span>
                     </button>
-                  </div>
+                  ))}
                 </div>
-              ) : (
-                <>
-                  <div className="mb-4 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                    当前后端未暴露桌面端 LLM 配置接口（/api/v1/llm/config）。此页面将使用原有的 Web 端本地配置占位。
-                  </div>
 
-                  {configNotice ? <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">{configNotice}</div> : null}
-                  {aiConfigs.length ? (
-                    <div className="mb-4">
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">已保存配置</label>
-                      <select value={activeConfig?.id || ""} onChange={(event) => {
-                        const selected = aiConfigs.find((item) => item.id === event.target.value);
-                        if (!selected) return;
-                        setAiConfigs((current) => current.map((item) => ({ ...item, active: item.id === selected.id })));
-                        setConfigNotice(`已切换到 ${selected.name}。`);
-                      }} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50">
-                        {aiConfigs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                      </select>
-                    </div>
-                  ) : null}
-                  <div className="space-y-5">
+                <div className="mt-4 text-[11px] text-gray-500 px-2">
+                  快捷键：<span className="font-mono">Ctrl+,</span> / <span className="font-mono">Cmd+,</span>
+                </div>
+              </aside>
+
+              <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                {settingsSection === "general" ? (
+                  <div className="space-y-6">
                     <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">配置名称</label>
-                      <input type="text" value={configForm.name} onChange={(event) => setConfigForm((current) => ({ ...current, name: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50" placeholder="例如：OpenAI 主配置" />
+                      <h2 className="text-lg font-bold text-gray-900">常规</h2>
+                      <p className="text-sm text-gray-500 mt-1">影响启动行为与桌面端开机自启等。</p>
                     </div>
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">接口 Base URL</label>
-                      <input type="text" value={configForm.endpoint} onChange={(event) => setConfigForm((current) => ({ ...current, endpoint: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" />
+
+                    <div className="rounded-xl border border-gray-200 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">启动页</div>
+                          <div className="text-xs text-gray-500 mt-1">选择应用启动后默认打开的页面。</div>
+                        </div>
+                        <select
+                          value={appSettings.startup_tab}
+                          onChange={(event) => setAppSettings((current) => ({ ...current, startup_tab: event.target.value as AppSettings["startup_tab"] }))}
+                          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="last">上次页面（推荐）</option>
+                          <option value="portfolio">持仓</option>
+                          <option value="watchlist">自选</option>
+                          <option value="library">基金库</option>
+                          <option value="config">设置</option>
+                        </select>
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
-                      <input type="password" value={configForm.apiKey} onChange={(event) => setConfigForm((current) => ({ ...current, apiKey: event.target.value }))} className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono" placeholder="sk-..." />
+
+                    <div className="rounded-xl border border-gray-200 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">启动时检查更新</div>
+                          <div className="text-xs text-gray-500 mt-1">后台静默检测，有新版本会提示你去下载。</div>
+                        </div>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 select-none">
+                          <input
+                            type="checkbox"
+                            checked={appSettings.check_updates_on_startup}
+                            onChange={(event) => setAppSettings((current) => ({ ...current, check_updates_on_startup: event.target.checked }))}
+                          />
+                          启用
+                        </label>
+                      </div>
                     </div>
-                    <div className="pt-4 flex justify-between border-t border-gray-100">
-                      <button type="button" onClick={() => setConfigNotice(activeConfig ? `当前启用：${activeConfig.name}` : "暂无可用配置") } className={BTN_XS_GRAY}>测试</button>
-                      <button type="button" onClick={saveConfig} className={BTN_XS_BLUE}>保存配置</button>
+
+                    <div className="rounded-xl border border-gray-200 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">开机自启</div>
+                          <div className="text-xs text-gray-500 mt-1">仅 Windows 桌面端支持（写入注册表 Run）。</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void refreshAutostartStatus()}
+                            className={BTN_XS_GRAY}
+                            disabled={autostartLoading}
+                          >
+                            {autostartLoading ? "加载中..." : "刷新"}
+                          </button>
+                          <label className="flex items-center gap-2 text-sm text-gray-700 select-none">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(autostartStatus?.enabled)}
+                              disabled={!autostartStatus?.supported || autostartLoading}
+                              onChange={(event) => void setAutostartEnabled(event.target.checked)}
+                            />
+                            {autostartStatus?.supported ? (autostartStatus?.enabled ? "已开启" : "已关闭") : "不支持"}
+                          </label>
+                        </div>
+                      </div>
+                      {autostartNotice ? <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{autostartNotice}</div> : null}
                     </div>
                   </div>
-                </>
-              )}
+                ) : null}
+
+                {settingsSection === "appearance" ? (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">外观</h2>
+                      <p className="text-sm text-gray-500 mt-1">主题、强调色、字体大小。</p>
+                    </div>
+
+                    <div className="rounded-xl border border-gray-200 p-4 space-y-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">主题模式</div>
+                          <div className="text-xs text-gray-500 mt-1">跟随系统可自动切换浅色/深色。</div>
+                        </div>
+                        <select
+                          value={appSettings.theme_mode}
+                          onChange={(event) => setAppSettings((current) => ({ ...current, theme_mode: event.target.value as AppSettings["theme_mode"] }))}
+                          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="system">跟随系统</option>
+                          <option value="light">浅色</option>
+                          <option value="dark">深色</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">强调色</div>
+                          <div className="text-xs text-gray-500 mt-1">用于按钮、标签等强调元素。</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {([
+                            { key: "blue", label: "蓝" },
+                            { key: "purple", label: "紫" },
+                            { key: "emerald", label: "绿" },
+                          ] as const).map((item) => (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => setAppSettings((current) => ({ ...current, accent: item.key }))}
+                              className={`px-3 py-2 rounded-lg border text-sm font-medium ${appSettings.accent === item.key ? "border-[color:var(--accent-200)] bg-[color:var(--accent-50)] text-[color:var(--accent-700)]" : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">字体缩放</div>
+                          <div className="text-xs text-gray-500 mt-1">影响全局字号（桌面端建议 100%）。</div>
+                        </div>
+                        <select
+                          value={String(appSettings.font_scale)}
+                          onChange={(event) => setAppSettings((current) => ({ ...current, font_scale: Number(event.target.value) as AppSettings["font_scale"] }))}
+                          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="0.9">90%</option>
+                          <option value="1">100%</option>
+                          <option value="1.1">110%</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {settingsSection === "ai" ? (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">AI</h2>
+                      <p className="text-sm text-gray-500 mt-1">配置大模型接入参数（协议/地址/模型/API Key）。</p>
+                    </div>
+
+                    {llmConfigSupported === null ? (
+                      <div className="text-sm text-gray-500">正在检测桌面端配置能力...</div>
+                    ) : llmConfigSupported ? (
+                      <div className="space-y-5">
+                        {llmConfigNotice ? <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700 whitespace-pre-line">{llmConfigNotice}</div> : null}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">接口协议</label>
+                          <select
+                            value={llmProtocol}
+                            onChange={(event) => setLlmProtocol(event.target.value as "openai_compatible" | "openai_responses" | "anthropic_messages")}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50"
+                            disabled={llmConfigLoading}
+                          >
+                            <option value="openai_compatible">OpenAI Chat</option>
+                            <option value="openai_responses">OpenAI Responses</option>
+                            <option value="anthropic_messages">Anthropic</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">接入地址（Base URL）</label>
+                          <input
+                            type="text"
+                            value={llmBaseUrl}
+                            onChange={(event) => setLlmBaseUrl(event.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                            placeholder="例如：https://api.openai.com 或你的中转站地址"
+                            disabled={llmConfigLoading}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">模型</label>
+                          <input
+                            type="text"
+                            value={llmModel}
+                            onChange={(event) => setLlmModel(event.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                            placeholder="例如：gpt-4.1 / gpt-4o-mini / claude-3-7-sonnet"
+                            disabled={llmConfigLoading}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">API Key</label>
+                          <input
+                            type="password"
+                            value={llmApiKey}
+                            onChange={(event) => setLlmApiKey(event.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg sm:text-sm bg-gray-50 font-mono"
+                            placeholder={llmHasKey ? "已保存（留空表示不修改）" : "sk-..."}
+                            disabled={llmConfigLoading}
+                          />
+                          {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已安全保存到系统凭据中（输入一次即可）。</div> : null}
+                        </div>
+
+                        <div className="pt-4 flex justify-end border-t border-gray-100">
+                          <button
+                            type="button"
+                            onClick={() => void saveDesktopLlmConfig()}
+                            className={BTN_XS_BLUE}
+                            disabled={llmConfigLoading}
+                          >
+                            {llmConfigLoading ? "保存中..." : "保存配置"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        当前不是桌面端环境（或后端未暴露 /api/v1/llm/config），此处暂不支持。
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {settingsSection === "about" ? (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">关于 / 更新</h2>
+                      <p className="text-sm text-gray-500 mt-1">查看版本、检查更新、打开发布页。</p>
+                    </div>
+
+                    <div className="rounded-xl border border-gray-200 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">当前版本</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {versionInfo ? `${versionInfo.product_name} ${versionInfo.version}` : "（仅桌面端可读取版本信息）"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void loadVersionInfo()}
+                          className={BTN_XS_GRAY}
+                        >
+                          刷新
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-gray-900">更新检测</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {updateAvailable === null
+                              ? "未检测"
+                              : updateAvailable
+                                ? "有新版本可用"
+                                : "已是最新"}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void checkForUpdates({})}
+                            className={BTN_XS_BLUE}
+                            disabled={updateLoading}
+                          >
+                            {updateLoading ? "检查中..." : "检查更新"}
+                          </button>
+                          <a
+                            href={latestRelease?.html_url || "https://github.com/the-shy123456/FundSight/releases"}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`${BTN_XS_GRAY} no-underline`}
+                          >
+                            打开发布页 <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+                          </a>
+                        </div>
+                      </div>
+
+                      {latestRelease ? (
+                        <div className="text-xs text-gray-500">
+                          最新发布：<span className="font-mono">{latestRelease.tag_name || "--"}</span>
+                          {latestRelease.published_at ? `（${formatDateTime(latestRelease.published_at)}）` : ""}
+                        </div>
+                      ) : null}
+
+                      {updateNotice ? <div className="mt-2 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 whitespace-pre-line">{updateNotice}</div> : null}
+                    </div>
+                  </div>
+                ) : null}
+              </section>
             </div>
           </div>
         ) : null}

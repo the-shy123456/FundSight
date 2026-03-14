@@ -3,8 +3,43 @@
 :root {
   color-scheme: light;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #f9fafb;
-  color: #1f2937;
+
+  /* App theme tokens (light by default) */
+  --app-bg: #f9fafb;
+  --app-surface: #ffffff;
+  --app-text: #1f2937;
+  --app-muted: #6b7280;
+  --app-border: #e5e7eb;
+
+  /* Accent (theme color) tokens */
+  --accent-50: #eff6ff;
+  --accent-100: #dbeafe;
+  --accent-200: #bfdbfe;
+  --accent-700: #1d4ed8;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --app-bg: #0b1220;
+  --app-surface: #0f172a;
+  --app-text: #e5e7eb;
+  --app-muted: #94a3b8;
+  --app-border: #1f2a44;
+}
+
+:root[data-accent="purple"] {
+  --accent-50: #faf5ff;
+  --accent-100: #f3e8ff;
+  --accent-200: #e9d5ff;
+  --accent-700: #6d28d9;
+}
+
+:root[data-accent="emerald"] {
+  --accent-50: #ecfdf5;
+  --accent-100: #d1fae5;
+  --accent-200: #a7f3d0;
+  --accent-700: #047857;
 }
 
 html,
@@ -15,7 +50,43 @@ body,
 
 body {
   margin: 0;
-  background: #f9fafb;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+/* Minimal dark-mode compatibility for existing Tailwind utility usage. */
+:root[data-theme="dark"] .bg-white {
+  background-color: var(--app-surface) !important;
+}
+
+:root[data-theme="dark"] .bg-gray-50 {
+  background-color: var(--app-bg) !important;
+}
+
+:root[data-theme="dark"] .border-gray-100,
+:root[data-theme="dark"] .border-gray-200,
+:root[data-theme="dark"] .border-slate-200 {
+  border-color: var(--app-border) !important;
+}
+
+:root[data-theme="dark"] .text-gray-900,
+:root[data-theme="dark"] .text-gray-800,
+:root[data-theme="dark"] .text-slate-900,
+:root[data-theme="dark"] .text-slate-800 {
+  color: var(--app-text) !important;
+}
+
+:root[data-theme="dark"] .text-gray-600,
+:root[data-theme="dark"] .text-gray-500,
+:root[data-theme="dark"] .text-slate-600,
+:root[data-theme="dark"] .text-slate-500,
+:root[data-theme="dark"] .text-gray-400 {
+  color: var(--app-muted) !important;
+}
+
+:root[data-theme="dark"] .shadow-sm,
+:root[data-theme="dark"] .shadow-md {
+  box-shadow: none !important;
 }
 
 button,

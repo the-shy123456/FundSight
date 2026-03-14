@@ -1,4 +1,21 @@
 export type ViewTab = "portfolio" | "library" | "watchlist" | "config";
+
+export type AccentTheme = "blue" | "purple" | "emerald";
+
+export type ThemeMode = "system" | "light" | "dark";
+
+export type StartupTab = "last" | ViewTab;
+
+export type FontScale = 0.9 | 1 | 1.1;
+
+export type AppSettings = {
+  accent: AccentTheme;
+  theme_mode: ThemeMode;
+  font_scale: FontScale;
+  startup_tab: StartupTab;
+  check_updates_on_startup: boolean;
+};
+
 export type ImportTab = "manual" | "ocr";
 export type HoldingSortKey = "name" | "todayProfit" | "totalProfit";
 export type HoldingFilter = "all" | "profit" | "loss";
