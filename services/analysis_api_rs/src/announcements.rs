@@ -52,13 +52,16 @@ pub async fn fetch_announcements(
     let notice_type = notice_type.trim();
     let notice_type = if notice_type.is_empty() { "0" } else { notice_type };
 
+    let page_index_s = page_index.to_string();
+    let page_size_s = page_size.to_string();
+
     let url = "https://api.fund.eastmoney.com/f10/JJGG";
     let payload: Value = client
         .get(url)
         .query(&[
             ("fundcode", code),
-            ("pageIndex", &page_index.to_string()),
-            ("pageSize", &page_size.to_string()),
+            ("pageIndex", page_index_s.as_str()),
+            ("pageSize", page_size_s.as_str()),
             ("type", notice_type),
         ])
         .header(

@@ -50,9 +50,32 @@ jobs:
         working-directory: apps/desktop/app
         run: npm ci
 
+      - name: Print toolchain versions
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          rustc -Vv
+          cargo -Vv
+
       - name: Build desktop (Tauri)
         working-directory: apps/desktop/app
-        run: npm run tauri build -- --bundles nsis --verbose
+        shell: pwsh
+        run: |
+          npm run tauri build -- --bundles nsis --verbose 2>&1 | Tee-Object -FilePath tauri-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.ref_name }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            apps/desktop/app/tauri-build.log
+            apps/desktop/app/src-tauri/target/release/bundle/**
+            apps/desktop/app/src-tauri/target/release/build/**/output
 
       - name: List bundles (debug)
         shell: pwsh
