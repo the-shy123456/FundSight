@@ -396,31 +396,37 @@ async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json
                 ]
             });
 
-            let resp = client
+            let send = client
                 .post(url)
                 .bearer_auth(api_key)
                 .header(header::ACCEPT, "application/json")
                 .json(&body)
                 .timeout(Duration::from_secs(20))
                 .send()
-                .await
-                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+                .await;
 
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                Err(format!("LLM 返回错误: {status} {text}"))
-            } else {
-                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
-                Ok(value
-                    .get("choices")
-                    .and_then(|v| v.get(0))
-                    .and_then(|v| v.get("message"))
-                    .and_then(|v| v.get("content"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string())
+            match send {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let text = resp.text().await.unwrap_or_default();
+                        Err(format!("LLM 返回错误: {status} {text}"))
+                    } else {
+                        match resp.json::<Value>().await {
+                            Ok(value) => Ok(value
+                                .get("choices")
+                                .and_then(|v| v.get(0))
+                                .and_then(|v| v.get("message"))
+                                .and_then(|v| v.get("content"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string()),
+                            Err(e) => Err(format!("解析响应失败: {e}")),
+                        }
+                    }
+                }
+                Err(e) => Err(format!("请求 LLM 失败: {e}")),
             }
         }
         LlmProtocol::Openai_responses => {
@@ -433,48 +439,56 @@ async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json
                 "max_output_tokens": 32
             });
 
-            let resp = client
+            let send = client
                 .post(url)
                 .bearer_auth(api_key)
                 .header(header::ACCEPT, "application/json")
                 .json(&body)
                 .timeout(Duration::from_secs(20))
                 .send()
-                .await
-                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+                .await;
 
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                Err(format!("LLM 返回错误: {status} {text}"))
-            } else {
-                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
-                let mut content = value
-                    .get("output_text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if content.is_empty() {
-                    if let Some(out) = value.get("output").and_then(|v| v.as_array()) {
-                        let mut parts: Vec<String> = vec![];
-                        for item in out {
-                            if let Some(cont) = item.get("content").and_then(|v| v.as_array()) {
-                                for block in cont {
-                                    if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
-                                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                                            if !t.trim().is_empty() {
-                                                parts.push(t.to_string());
+            match send {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let text = resp.text().await.unwrap_or_default();
+                        Err(format!("LLM 返回错误: {status} {text}"))
+                    } else {
+                        match resp.json::<Value>().await {
+                            Ok(value) => {
+                                let mut content = value
+                                    .get("output_text")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string();
+                                if content.is_empty() {
+                                    if let Some(out) = value.get("output").and_then(|v| v.as_array()) {
+                                        let mut parts: Vec<String> = vec![];
+                                        for item in out {
+                                            if let Some(cont) = item.get("content").and_then(|v| v.as_array()) {
+                                                for block in cont {
+                                                    if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                                            if !t.trim().is_empty() {
+                                                                parts.push(t.to_string());
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
+                                        content = parts.join("").trim().to_string();
                                     }
                                 }
+                                Ok(content)
                             }
+                            Err(e) => Err(format!("解析响应失败: {e}")),
                         }
-                        content = parts.join("").trim().to_string();
                     }
                 }
-                Ok(content)
+                Err(e) => Err(format!("请求 LLM 失败: {e}")),
             }
         }
         LlmProtocol::Anthropic_messages => {
@@ -489,7 +503,7 @@ async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json
                 ]
             });
 
-            let resp = client
+            let send = client
                 .post(url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
@@ -498,26 +512,34 @@ async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json
                 .json(&body)
                 .timeout(Duration::from_secs(20))
                 .send()
-                .await
-                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+                .await;
 
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                Err(format!("LLM 返回错误: {status} {text}"))
-            } else {
-                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
-                let mut parts: Vec<String> = vec![];
-                if let Some(items) = value.get("content").and_then(|v| v.as_array()) {
-                    for item in items {
-                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
-                            if !t.trim().is_empty() {
-                                parts.push(t.to_string());
+            match send {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let text = resp.text().await.unwrap_or_default();
+                        Err(format!("LLM 返回错误: {status} {text}"))
+                    } else {
+                        match resp.json::<Value>().await {
+                            Ok(value) => {
+                                let mut parts: Vec<String> = vec![];
+                                if let Some(items) = value.get("content").and_then(|v| v.as_array()) {
+                                    for item in items {
+                                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                                            if !t.trim().is_empty() {
+                                                parts.push(t.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(parts.join("").trim().to_string())
                             }
+                            Err(e) => Err(format!("解析响应失败: {e}")),
                         }
                     }
                 }
-                Ok(parts.join("").trim().to_string())
+                Err(e) => Err(format!("请求 LLM 失败: {e}")),
             }
         }
     };
