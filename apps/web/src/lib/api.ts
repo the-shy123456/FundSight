@@ -357,12 +357,14 @@ async function ssePost(
   options: {
     onDelta: (text: string) => void;
     onEvent?: (event: string, data: string) => void;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
   const response = await fetch(withApiBase(url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -466,18 +468,31 @@ export async function requestAgentChatStream(
     onEvent?: (event: string, data: string) => void;
   },
 ): Promise<void> {
-  return ssePost(
-    "/api/v1/agent/chat/stream",
-    {
-      conversation_id: payload.conversationId ?? "",
-      message: payload.message,
-      mode: payload.mode,
-      fund_id: payload.fundId ?? "",
-      estimate_mode: payload.estimateMode ?? "auto",
-      cash_available: payload.cashAvailable ?? 0,
-    },
-    options,
-  );
+  const controller = new AbortController();
+  // If no tokens are produced for too long, abort and surface an error.
+  const timer = setTimeout(() => controller.abort(), 45_000);
+
+  try {
+    return await ssePost(
+      "/api/v1/agent/chat/stream",
+      {
+        conversation_id: payload.conversationId ?? "",
+        message: payload.message,
+        mode: payload.mode,
+        fund_id: payload.fundId ?? "",
+        estimate_mode: payload.estimateMode ?? "auto",
+        cash_available: payload.cashAvailable ?? 0,
+      },
+      { ...options, signal: controller.signal },
+    );
+  } catch (error) {
+    if (error instanceof Error && /aborted|abort/i.test(error.message)) {
+      throw new Error("AI 请求超时：没有收到任何输出。可能是投研数据接口卡住/中转站不支持流式/协议不匹配。建议先切到“闲聊”模式试一下，或点“测试连接”。");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function requestAssistantStream(

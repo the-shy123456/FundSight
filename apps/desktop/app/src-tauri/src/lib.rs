@@ -241,6 +241,7 @@ async fn upstream_get_json(http: &reqwest::Client, path_and_query: &str) -> Resu
     let url = format!("{UPSTREAM_BASE}{path_and_query}");
     let resp = http
         .get(url)
+        .timeout(Duration::from_secs(8))
         .send()
         .await
         .map_err(|e| format!("请求上游失败: {e}"))?;
@@ -259,6 +260,7 @@ async fn upstream_post_json(http: &reqwest::Client, path: &str, body: Value) -> 
     let resp = http
         .post(url)
         .json(&body)
+        .timeout(Duration::from_secs(8))
         .send()
         .await
         .map_err(|e| format!("请求上游失败: {e}"))?;
@@ -276,6 +278,7 @@ async fn upstream_delete_json(http: &reqwest::Client, path: &str) -> Result<Valu
     let url = format!("{UPSTREAM_BASE}{path}");
     let resp = http
         .delete(url)
+        .timeout(Duration::from_secs(8))
         .send()
         .await
         .map_err(|e| format!("请求上游失败: {e}"))?;
@@ -1737,7 +1740,7 @@ async fn proxy_to_upstream(State(state): State<Arc<AppState>>, mut req: Request<
         builder = builder.header(name, value);
     }
 
-    let upstream_resp = match builder.body(body).send().await {
+    let upstream_resp = match builder.body(body).timeout(Duration::from_secs(10)).send().await {
         Ok(value) => value,
         Err(error) => {
             return (

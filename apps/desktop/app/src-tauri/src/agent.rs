@@ -1157,8 +1157,20 @@ pub async fn chat_stream(
     };
 
     let (invest_ctx, mut tool_trace) = if matches!(effective_mode, AgentMode::Invest) {
-        let (ctx, trace) = build_invest_context(&state, &body).await;
-        (Some(ctx), trace)
+        match tokio::time::timeout(std::time::Duration::from_secs(8), build_invest_context(&state, &body)).await {
+            Ok((ctx, trace)) => (Some(ctx), trace),
+            Err(_) => {
+                let trace = vec![TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "build_invest_context".to_string(),
+                    ok: Some(false),
+                    args: Some(json!({"timeout_sec": 8})),
+                    result: Some(json!({"message": "投研上下文拉取超时，已跳过（不影响对话，可能少证据）"})),
+                }];
+                (Some(json!({"context_timeout": true})), trace)
+            }
+        }
     } else {
         (None, vec![])
     };

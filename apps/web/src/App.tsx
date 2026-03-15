@@ -1742,7 +1742,8 @@ export default function App() {
     setAssistantLoading(true);
 
     const assistantMessageId = crypto.randomUUID();
-    setChatMessages((current) => [...current, { id: assistantMessageId, role: "assistant", text: "" }]);
+    const placeholder = "（思考中…）";
+    setChatMessages((current) => [...current, { id: assistantMessageId, role: "assistant", text: placeholder }]);
 
     const hintFundId = portfolioQuestion ? "" : targetFundId;
 
@@ -1762,7 +1763,13 @@ export default function App() {
             },
             {
               onDelta: (text) => {
-                setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: `${item.text}${text}` } : item)));
+                setChatMessages((current) =>
+                  current.map((item) =>
+                    item.id === assistantMessageId
+                      ? { ...item, text: item.text === placeholder ? text : `${item.text}${text}` }
+                      : item,
+                  ),
+                );
               },
               onEvent: (event, data) => {
                 if (event === "meta") {
@@ -1848,7 +1855,13 @@ export default function App() {
         },
         {
           onDelta: (text) => {
-            setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, text: `${item.text}${text}` } : item)));
+            setChatMessages((current) =>
+              current.map((item) =>
+                item.id === assistantMessageId
+                  ? { ...item, text: item.text === placeholder ? text : `${item.text}${text}` }
+                  : item,
+              ),
+            );
           },
         },
       );
