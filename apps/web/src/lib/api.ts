@@ -259,6 +259,24 @@ export async function saveLlmConfig(payload: {
   });
 }
 
+export type LlmTestResult = {
+  ok: boolean;
+  latency_ms: number;
+  preview?: string;
+};
+
+export async function testLlmConfig(payload: {
+  protocol: LlmProtocol;
+  base_url: string;
+  model: string;
+  api_key?: string;
+}): Promise<LlmTestResult> {
+  return fetchJson<LlmTestResult>("/api/v1/llm/test", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export type AgentMode = "auto" | "invest" | "chat";
 
 export type AgentConversationView = {
@@ -365,6 +383,7 @@ async function ssePost(
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let gotDelta = false;
 
   const emit = (event: string, data: string) => {
     options.onEvent?.(event, data);
@@ -372,8 +391,37 @@ async function ssePost(
       throw new Error(data || "AI 流式接口返回错误");
     }
     if (event === "delta") {
+      gotDelta = true;
       options.onDelta(data);
     }
+  };
+
+  const drainEvent = (): string | null => {
+    const lf = buffer.indexOf("\n\n");
+    const crlf = buffer.indexOf("\r\n\r\n");
+    if (lf < 0 && crlf < 0) return null;
+
+    let idx = -1;
+    let sepLen = 0;
+    if (lf >= 0 && crlf >= 0) {
+      if (lf <= crlf) {
+        idx = lf;
+        sepLen = 2;
+      } else {
+        idx = crlf;
+        sepLen = 4;
+      }
+    } else if (lf >= 0) {
+      idx = lf;
+      sepLen = 2;
+    } else {
+      idx = crlf;
+      sepLen = 4;
+    }
+
+    const raw = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + sepLen);
+    return raw;
   };
 
   while (true) {
@@ -381,13 +429,9 @@ async function ssePost(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    let sepIndex = buffer.indexOf("\n\n");
-    while (sepIndex >= 0) {
-      const raw = buffer.slice(0, sepIndex);
-      buffer = buffer.slice(sepIndex + 2);
-      sepIndex = buffer.indexOf("\n\n");
-
-      const lines = raw.split("\n");
+    let raw = drainEvent();
+    while (raw !== null) {
+      const lines = raw.split(/\r?\n/);
       let event = "message";
       const dataLines: string[] = [];
       for (const line of lines) {
@@ -399,7 +443,12 @@ async function ssePost(
       }
       const data = dataLines.join("\n");
       if (data) emit(event, data);
+      raw = drainEvent();
     }
+  }
+
+  if (!gotDelta) {
+    throw new Error("AI 没有返回任何内容（常见原因：中转站不支持 stream、协议选错、或模型/Key 无权限）。建议先去【设置 → AI】点“测试连接”。");
   }
 }
 

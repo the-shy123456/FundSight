@@ -39,6 +39,7 @@ import {
   requestWatchlistIntraday,
   requestLlmConfig,
   saveLlmConfig,
+  testLlmConfig,
   requestAutostart,
   updateAutostart,
   requestAppVersion,
@@ -1888,6 +1889,24 @@ export default function App() {
     void bootstrapAgent();
   }, [assistantOpen]);
 
+  async function testDesktopLlmConfig() {
+    setLlmConfigNotice("");
+    setLlmConfigLoading(true);
+    try {
+      const result = await testLlmConfig({
+        protocol: llmProtocol,
+        base_url: llmBaseUrl.trim(),
+        model: llmModel.trim(),
+        api_key: llmApiKey.trim() || undefined,
+      });
+      setLlmConfigNotice(`测试通过（${result.latency_ms}ms）\n返回预览：${result.preview || "--"}`);
+    } catch (error) {
+      setLlmConfigNotice(error instanceof Error ? error.message : "测试失败，请稍后重试。 ");
+    } finally {
+      setLlmConfigLoading(false);
+    }
+  }
+
   async function saveDesktopLlmConfig() {
     setLlmConfigNotice("");
     setLlmConfigLoading(true);
@@ -1900,7 +1919,7 @@ export default function App() {
       });
       setLlmHasKey(Boolean(payload.has_api_key));
       setLlmApiKey("");
-      setLlmConfigNotice("已保存。\n提示：AI 分析会优先走流式接口，确保配置生效。");
+      setLlmConfigNotice("已保存。\n提示：建议先点“测试连接”确认中转站协议可用。");
     } catch (error) {
       setLlmConfigNotice(error instanceof Error ? error.message : "保存失败，请稍后重试。 ");
     } finally {
@@ -2867,7 +2886,15 @@ export default function App() {
                           {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已安全保存到系统凭据中（输入一次即可）。</div> : null}
                         </div>
 
-                        <div className="pt-4 flex justify-end border-t border-gray-100">
+                        <div className="pt-4 flex justify-end gap-2 border-t border-gray-100">
+                          <button
+                            type="button"
+                            onClick={() => void testDesktopLlmConfig()}
+                            className={BTN_XS_GRAY}
+                            disabled={llmConfigLoading}
+                          >
+                            {llmConfigLoading ? "测试中..." : "测试连接"}
+                          </button>
                           <button
                             type="button"
                             onClick={() => void saveDesktopLlmConfig()}

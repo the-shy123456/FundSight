@@ -1268,36 +1268,56 @@ pub async fn chat_stream(
         match result {
             Ok(mut stream) => {
                 let mut full = String::new();
+                let mut got_delta = false;
+
                 while let Some(item) = futures::StreamExt::next(&mut stream).await {
                     match item {
                         Ok(delta) => {
-                            full.push_str(&delta);
-                            let _ = tx.send(Ok(Event::default().event("delta").data(delta))).await;
+                            if !delta.is_empty() {
+                                got_delta = true;
+                                full.push_str(&delta);
+                                let _ = tx
+                                    .send(Ok(Event::default().event("delta").data(delta)))
+                                    .await;
+                            }
                         }
                         Err(message) => {
                             let _ = tx
                                 .send(Ok(Event::default().event("error").data(message)))
                                 .await;
-                            break;
+                            let _ = tx
+                                .send(Ok(Event::default().event("done").data("done")))
+                                .await;
+                            return;
                         }
                     }
                 }
 
+                if !got_delta || full.trim().is_empty() {
+                    let _ = tx
+                        .send(Ok(Event::default().event("error").data(
+                            "模型没有返回任何内容（常见原因：中转站不支持 stream、协议选错 new api/sub2、或返回的是非 SSE 流）。请到【设置 → AI】先点“测试连接”，再切换协议重试。",
+                        )))
+                        .await;
+                    let _ = tx
+                        .send(Ok(Event::default().event("done").data("done")))
+                        .await;
+                    return;
+                }
+
                 // Persist assistant message.
-                if !full.trim().is_empty() {
-                    if let Ok(mut convo) = load_conversation(&agent_root, &convo_id_clone).await {
-                        convo.messages.push(AgentMessage {
-                            role: "assistant".to_string(),
-                            text: truncate_string_chars(full.trim(), 4000),
-                            ts_ms: now_ms(),
-                            meta: Some(json!({"mode": mode_label})),
-                            ui_actions: vec![],
-                            trace: vec![],
-                        });
-                        convo.messages = cap_messages(convo.messages.clone());
-                        convo.updated_at_ms = now_ms();
-                        let _ = save_conversation(&agent_root, &convo).await;
-                    }
+                if let Ok(mut convo) = load_conversation(&agent_root, &convo_id_clone).await {
+                    convo.messages.push(AgentMessage {
+                        role: "assistant".to_string(),
+                        text: truncate_string_chars(full.trim(), 4000),
+                        ts_ms: now_ms(),
+                        meta: Some(json!({"mode": mode_label})),
+                        ui_actions: vec![],
+                        trace: vec![],
+                    });
+                    convo.messages = cap_messages(convo.messages.clone());
+                    convo.updated_at_ms = now_ms();
+                    let _ = save_conversation(&agent_root, &convo).await;
                 }
 
                 let _ = tx

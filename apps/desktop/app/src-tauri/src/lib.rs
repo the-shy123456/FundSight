@@ -14,7 +14,7 @@ use std::{
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
@@ -347,6 +347,207 @@ async fn get_llm_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
     })
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct LlmTestPayload {
+    pub protocol: LlmProtocol,
+    pub base_url: String,
+    pub model: String,
+
+    #[serde(default)]
+    pub api_key: String,
+}
+
+async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json<LlmTestPayload>) -> impl IntoResponse {
+    if payload.base_url.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "message": "接入地址不能为空" }))).into_response();
+    }
+    if payload.model.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "message": "模型不能为空" }))).into_response();
+    }
+
+    let base_url = normalize_base_url(&payload.base_url);
+    let model = payload.model.trim().to_string();
+
+    let api_key = if !payload.api_key.trim().is_empty() {
+        payload.api_key.trim().to_string()
+    } else {
+        match get_api_key() {
+            Ok(v) => v,
+            Err(message) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
+            }
+        }
+    };
+
+    let client = state.http.clone();
+    let started = Instant::now();
+
+    let result: Result<String, String> = match payload.protocol {
+        LlmProtocol::Openai_compatible => {
+            let url = openai_endpoint(&base_url);
+            let body = json!({
+                "model": model,
+                "stream": false,
+                "max_tokens": 32,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "ping"}
+                ]
+            });
+
+            let resp = client
+                .post(url)
+                .bearer_auth(api_key)
+                .header(header::ACCEPT, "application/json")
+                .json(&body)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                Err(format!("LLM 返回错误: {status} {text}"))
+            } else {
+                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+                Ok(value
+                    .get("choices")
+                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string())
+            }
+        }
+        LlmProtocol::Openai_responses => {
+            let url = openai_responses_endpoint(&base_url);
+            let body = json!({
+                "model": model,
+                "stream": false,
+                "temperature": 0,
+                "input": "ping",
+                "max_output_tokens": 32
+            });
+
+            let resp = client
+                .post(url)
+                .bearer_auth(api_key)
+                .header(header::ACCEPT, "application/json")
+                .json(&body)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                Err(format!("LLM 返回错误: {status} {text}"))
+            } else {
+                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+                let mut content = value
+                    .get("output_text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if content.is_empty() {
+                    if let Some(out) = value.get("output").and_then(|v| v.as_array()) {
+                        let mut parts: Vec<String> = vec![];
+                        for item in out {
+                            if let Some(cont) = item.get("content").and_then(|v| v.as_array()) {
+                                for block in cont {
+                                    if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                            if !t.trim().is_empty() {
+                                                parts.push(t.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        content = parts.join("").trim().to_string();
+                    }
+                }
+                Ok(content)
+            }
+        }
+        LlmProtocol::Anthropic_messages => {
+            let url = anthropic_endpoint(&base_url);
+            let body = json!({
+                "model": model,
+                "stream": false,
+                "max_tokens": 32,
+                "system": "You are a helpful assistant.",
+                "messages": [
+                    {"role": "user", "content": "ping"}
+                ]
+            });
+
+            let resp = client
+                .post(url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header(header::ACCEPT, "application/json")
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&body)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                Err(format!("LLM 返回错误: {status} {text}"))
+            } else {
+                let value: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+                let mut parts: Vec<String> = vec![];
+                if let Some(items) = value.get("content").and_then(|v| v.as_array()) {
+                    for item in items {
+                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                            if !t.trim().is_empty() {
+                                parts.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+                Ok(parts.join("").trim().to_string())
+            }
+        }
+    };
+
+    let latency_ms = started.elapsed().as_millis();
+
+    match result {
+        Ok(preview) => {
+            if preview.trim().is_empty() {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "message": "测试请求成功，但模型返回空内容（可能权限/模型名不对）。" })),
+                )
+                    .into_response();
+            }
+
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "latency_ms": latency_ms,
+                    "preview": preview,
+                })),
+            )
+                .into_response()
+        }
+        Err(message) => (StatusCode::BAD_GATEWAY, Json(json!({ "message": message }))).into_response(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AutostartStatus {
     supported: bool,
@@ -543,6 +744,9 @@ struct AssistantAskPayload {
 
 fn openai_endpoint(base_url: &str) -> String {
     let root = normalize_base_url(base_url);
+    if root.ends_with("/chat/completions") {
+        return root;
+    }
     if root.ends_with("/v1") {
         format!("{root}/chat/completions")
     } else {
@@ -552,6 +756,9 @@ fn openai_endpoint(base_url: &str) -> String {
 
 fn openai_responses_endpoint(base_url: &str) -> String {
     let root = normalize_base_url(base_url);
+    if root.ends_with("/responses") {
+        return root;
+    }
     if root.ends_with("/v1") {
         format!("{root}/responses")
     } else {
@@ -561,11 +768,37 @@ fn openai_responses_endpoint(base_url: &str) -> String {
 
 fn anthropic_endpoint(base_url: &str) -> String {
     let root = normalize_base_url(base_url);
+    if root.ends_with("/messages") {
+        return root;
+    }
     if root.ends_with("/v1") {
         format!("{root}/messages")
     } else {
         format!("{root}/v1/messages")
     }
+}
+
+fn drain_sse_event(buffer: &mut String) -> Option<String> {
+    // Support both LF and CRLF line endings.
+    let lf = buffer.find("\n\n");
+    let crlf = buffer.find("\r\n\r\n");
+
+    let (idx, sep_len) = match (lf, crlf) {
+        (Some(a), Some(b)) => {
+            if a <= b {
+                (a, 2)
+            } else {
+                (b, 4)
+            }
+        }
+        (Some(a), None) => (a, 2),
+        (None, Some(b)) => (b, 4),
+        (None, None) => return None,
+    };
+
+    let event = buffer[..idx].to_string();
+    buffer.drain(..idx + sep_len);
+    Some(event)
 }
 
 const DEFAULT_FINANCE_SYSTEM: &str = "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。";
@@ -592,6 +825,7 @@ pub(crate) async fn openai_stream_with_system(
     let resp = client
         .post(url)
         .bearer_auth(api_key)
+        .header(header::ACCEPT, "text/event-stream")
         .json(&body)
         .send()
         .await
@@ -601,6 +835,36 @@ pub(crate) async fn openai_stream_with_system(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let is_sse = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !is_sse {
+        // Compat: some proxies ignore `stream: true` and return JSON.
+        let text = resp.text().await.unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({}));
+        let content = value
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.trim().is_empty() {
+            return Err(format!("LLM 返回空响应（可能不支持 stream 或协议不兼容）: {text}"));
+        }
+
+        let parsed = async_stream::try_stream! {
+            yield content;
+        };
+        return Ok(parsed.boxed());
     }
 
     let stream = resp.bytes_stream();
@@ -614,10 +878,7 @@ pub(crate) async fn openai_stream_with_system(
             let part = String::from_utf8_lossy(&chunk);
             buffer.push_str(&part);
 
-            while let Some(idx) = buffer.find("\n\n") {
-                let event = buffer[..idx].to_string();
-                buffer = buffer[idx + 2..].to_string();
-
+            while let Some(event) = drain_sse_event(&mut buffer) {
                 for line in event.lines() {
                     let line = line.trim();
                     if !line.starts_with("data:") {
@@ -684,6 +945,7 @@ async fn openai_responses_stream_with_system(
     let resp = client
         .post(url)
         .bearer_auth(api_key)
+        .header(header::ACCEPT, "text/event-stream")
         .json(&body)
         .send()
         .await
@@ -693,6 +955,54 @@ async fn openai_responses_stream_with_system(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let is_sse = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !is_sse {
+        let text = resp.text().await.unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({}));
+
+        let mut content = value
+            .get("output_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.trim().is_empty() {
+            // Fallback: parse output blocks
+            if let Some(out) = value.get("output").and_then(|v| v.as_array()) {
+                let mut parts: Vec<String> = vec![];
+                for item in out {
+                    if let Some(cont) = item.get("content").and_then(|v| v.as_array()) {
+                        for block in cont {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                    if !t.trim().is_empty() {
+                                        parts.push(t.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                content = parts.join("");
+            }
+        }
+
+        if content.trim().is_empty() {
+            return Err(format!("LLM 返回空响应（可能不支持 stream 或协议不兼容）: {text}"));
+        }
+
+        let parsed = async_stream::try_stream! {
+            yield content;
+        };
+        return Ok(parsed.boxed());
     }
 
     let stream = resp.bytes_stream();
@@ -706,9 +1016,7 @@ async fn openai_responses_stream_with_system(
             let part = String::from_utf8_lossy(&chunk);
             buffer.push_str(&part);
 
-            while let Some(idx) = buffer.find("\n\n") {
-                let event = buffer[..idx].to_string();
-                buffer = buffer[idx + 2..].to_string();
+            while let Some(event) = drain_sse_event(&mut buffer) {
 
                 for line in event.lines() {
                     let line = line.trim();
@@ -765,6 +1073,7 @@ async fn openai_responses_stream(
     let resp = client
         .post(url)
         .bearer_auth(api_key)
+        .header(header::ACCEPT, "text/event-stream")
         .json(&body)
         .send()
         .await
@@ -774,6 +1083,54 @@ async fn openai_responses_stream(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let is_sse = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !is_sse {
+        let text = resp.text().await.unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({}));
+
+        let mut content = value
+            .get("output_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.trim().is_empty() {
+            // Fallback: parse output blocks
+            if let Some(out) = value.get("output").and_then(|v| v.as_array()) {
+                let mut parts: Vec<String> = vec![];
+                for item in out {
+                    if let Some(cont) = item.get("content").and_then(|v| v.as_array()) {
+                        for block in cont {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                    if !t.trim().is_empty() {
+                                        parts.push(t.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                content = parts.join("");
+            }
+        }
+
+        if content.trim().is_empty() {
+            return Err(format!("LLM 返回空响应（可能不支持 stream 或协议不兼容）: {text}"));
+        }
+
+        let parsed = async_stream::try_stream! {
+            yield content;
+        };
+        return Ok(parsed.boxed());
     }
 
     let stream = resp.bytes_stream();
@@ -787,9 +1144,7 @@ async fn openai_responses_stream(
             let part = String::from_utf8_lossy(&chunk);
             buffer.push_str(&part);
 
-            while let Some(idx) = buffer.find("\n\n") {
-                let event = buffer[..idx].to_string();
-                buffer = buffer[idx + 2..].to_string();
+            while let Some(event) = drain_sse_event(&mut buffer) {
 
                 for line in event.lines() {
                     let line = line.trim();
@@ -850,6 +1205,7 @@ async fn anthropic_stream_with_system(
         .post(url)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
+        .header(header::ACCEPT, "text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
         .json(&body)
         .send()
@@ -860,6 +1216,37 @@ async fn anthropic_stream_with_system(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let is_sse = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !is_sse {
+        let text = resp.text().await.unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({}));
+        let mut parts: Vec<String> = vec![];
+        if let Some(items) = value.get("content").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                    if !t.trim().is_empty() {
+                        parts.push(t.to_string());
+                    }
+                }
+            }
+        }
+        let content = parts.join("");
+        if content.trim().is_empty() {
+            return Err(format!("LLM 返回空响应（可能不支持 stream 或协议不兼容）: {text}"));
+        }
+
+        let parsed = async_stream::try_stream! {
+            yield content;
+        };
+        return Ok(parsed.boxed());
     }
 
     let stream = resp.bytes_stream();
@@ -873,9 +1260,7 @@ async fn anthropic_stream_with_system(
             let part = String::from_utf8_lossy(&chunk);
             buffer.push_str(&part);
 
-            while let Some(idx) = buffer.find("\n\n") {
-                let raw = buffer[..idx].to_string();
-                buffer = buffer[idx + 2..].to_string();
+            while let Some(raw) = drain_sse_event(&mut buffer) {
 
                 let mut event_name = String::new();
                 let mut data_lines: Vec<String> = vec![];
@@ -1424,6 +1809,7 @@ fn spawn_api_server() {
                 "/api/v1/llm/config",
                 get(get_llm_config).post(update_llm_config),
             )
+            .route("/api/v1/llm/test", post(test_llm_config))
             .route("/api/v1/app/autostart", get(get_autostart).post(update_autostart))
             .route("/api/v1/app/version", get(get_app_version))
             .route("/api/v1/assistant/ask", post(assistant_ask))
