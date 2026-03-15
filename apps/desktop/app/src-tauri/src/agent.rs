@@ -112,7 +112,7 @@ pub struct Conversation {
     pub pending_action: Option<PendingAction>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConversationView {
     pub id: String,
