@@ -54,10 +54,41 @@ pub struct PendingAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct UiActionButton {
+    pub label: String,
+    pub message: String,
+    #[serde(default)]
+    pub variant: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TraceEvent {
+    pub ts_ms: u64,
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub ok: Option<bool>,
+    #[serde(default)]
+    pub args: Option<Value>,
+    #[serde(default)]
+    pub result: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct AgentMessage {
     pub role: String,
     pub text: String,
     pub ts_ms: u64,
+
+    #[serde(default)]
+    pub meta: Option<Value>,
+    #[serde(default)]
+    pub ui_actions: Vec<UiActionButton>,
+    #[serde(default)]
+    pub trace: Vec<TraceEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +305,9 @@ pub async fn create_conversation(
         role: "assistant".to_string(),
         text: "我是 FundSight Agent。你可以聊基金/组合，也可以随便聊天。\n\n提示：在右上角可以切换模式（自动/投研/闲聊）。".to_string(),
         ts_ms: now_ms(),
+        meta: None,
+        ui_actions: vec![],
+        trace: vec![],
     });
 
     if let Err(message) = save_conversation(&state.agent_root, &convo).await {
@@ -495,6 +529,9 @@ async fn ensure_default_conversation(state: &Arc<AppState>) -> Result<String, St
                 role: turn.role,
                 text: turn.text,
                 ts_ms: turn.ts_ms,
+                meta: None,
+                ui_actions: vec![],
+                trace: vec![],
             });
         }
     }
@@ -504,6 +541,9 @@ async fn ensure_default_conversation(state: &Arc<AppState>) -> Result<String, St
             role: "assistant".to_string(),
             text: "我是 FundSight Agent。你可以聊基金/组合，也可以随便聊天。".to_string(),
             ts_ms: now_ms(),
+            meta: None,
+            ui_actions: vec![],
+            trace: vec![],
         });
     }
 
@@ -627,6 +667,9 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
                 role: "assistant".to_string(),
                 text: result_text.clone(),
                 ts_ms: now_ms(),
+                meta: Some(json!({"mode": "invest"})),
+                ui_actions: vec![],
+                trace: vec![],
             });
             convo.messages = cap_messages(convo.messages.clone());
             convo.updated_at_ms = now_ms();
@@ -643,16 +686,37 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
             created_at_ms: now_ms(),
         });
         convo.updated_at_ms = now_ms();
+
+        let ui_buttons = vec![
+            UiActionButton {
+                label: "确认".to_string(),
+                message: "确认".to_string(),
+                variant: "primary".to_string(),
+            },
+            UiActionButton {
+                label: "取消".to_string(),
+                message: "取消".to_string(),
+                variant: "secondary".to_string(),
+            },
+        ];
+
+        convo.messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            text: "将清空【自选】列表。回复「确认」执行，回复「取消」撤销。".to_string(),
+            ts_ms: now_ms(),
+            meta: Some(json!({"mode": "invest"})),
+            ui_actions: ui_buttons.clone(),
+            trace: vec![],
+        });
+        convo.messages = cap_messages(convo.messages.clone());
+
         let _ = save_conversation(&state.agent_root, convo).await;
         return Some(sse_action_prompt(
             "将清空【自选】列表。回复「确认」执行，回复「取消」撤销。".to_string(),
             json!({
                 "type": "confirm",
                 "pending": "clear_watchlist",
-                "buttons": [
-                    {"label": "确认", "message": "确认", "variant": "primary"},
-                    {"label": "取消", "message": "取消", "variant": "secondary"}
-                ]
+                "buttons": ui_buttons,
             }),
         ));
     }
@@ -663,16 +727,37 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
             created_at_ms: now_ms(),
         });
         convo.updated_at_ms = now_ms();
+
+        let ui_buttons = vec![
+            UiActionButton {
+                label: "确认".to_string(),
+                message: "确认".to_string(),
+                variant: "primary".to_string(),
+            },
+            UiActionButton {
+                label: "取消".to_string(),
+                message: "取消".to_string(),
+                variant: "secondary".to_string(),
+            },
+        ];
+
+        convo.messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            text: "将清空【持仓】数据。回复「确认」执行，回复「取消」撤销。".to_string(),
+            ts_ms: now_ms(),
+            meta: Some(json!({"mode": "invest"})),
+            ui_actions: ui_buttons.clone(),
+            trace: vec![],
+        });
+        convo.messages = cap_messages(convo.messages.clone());
+
         let _ = save_conversation(&state.agent_root, convo).await;
         return Some(sse_action_prompt(
             "将清空【持仓】数据。回复「确认」执行，回复「取消」撤销。".to_string(),
             json!({
                 "type": "confirm",
                 "pending": "clear_holdings",
-                "buttons": [
-                    {"label": "确认", "message": "确认", "variant": "primary"},
-                    {"label": "取消", "message": "取消", "variant": "secondary"}
-                ]
+                "buttons": ui_buttons,
             }),
         ));
     }
@@ -692,6 +777,9 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
                 role: "assistant".to_string(),
                 text: text.clone(),
                 ts_ms: now_ms(),
+                meta: Some(json!({"mode": "invest"})),
+                ui_actions: vec![],
+                trace: vec![],
             });
             convo.updated_at_ms = now_ms();
             convo.messages = cap_messages(convo.messages.clone());
@@ -712,6 +800,9 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
                 role: "assistant".to_string(),
                 text: text.clone(),
                 ts_ms: now_ms(),
+                meta: Some(json!({"mode": "invest"})),
+                ui_actions: vec![],
+                trace: vec![],
             });
             convo.updated_at_ms = now_ms();
             convo.messages = cap_messages(convo.messages.clone());
@@ -723,7 +814,7 @@ async fn apply_tool_shortcuts(state: &Arc<AppState>, convo: &mut Conversation, m
     None
 }
 
-async fn build_invest_context(state: &Arc<AppState>, body: &ChatStreamBody) -> Value {
+async fn build_invest_context(state: &Arc<AppState>, body: &ChatStreamBody) -> (Value, Vec<TraceEvent>) {
     let estimate_mode = if body.estimate_mode.trim().is_empty() {
         "auto".to_string()
     } else {
@@ -736,27 +827,55 @@ async fn build_invest_context(state: &Arc<AppState>, body: &ChatStreamBody) -> V
         "cash_available": body.cash_available,
     });
 
-    if let Ok(portfolio) = upstream_get_json(
+    let mut trace: Vec<TraceEvent> = vec![];
+
+    match upstream_get_json(
         &state.http,
         &format!("/api/v1/portfolio?estimate_mode={}", ctx["estimate_mode"].as_str().unwrap_or("auto")),
     )
     .await
     {
-        let summary = portfolio.get("summary").cloned().unwrap_or(json!({}));
-        let mut positions: Vec<Value> = portfolio
-            .get("positions")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        if positions.len() > 10 {
-            positions.truncate(10);
+        Ok(portfolio) => {
+            let summary = portfolio.get("summary").cloned().unwrap_or(json!({}));
+            let mut positions: Vec<Value> = portfolio
+                .get("positions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if positions.len() > 10 {
+                positions.truncate(10);
+            }
+
+            ctx["portfolio"] = json!({
+                "as_of": portfolio.get("as_of").cloned().unwrap_or(json!("")),
+                "summary": summary.clone(),
+                "positions_top": positions,
+                "disclaimer": portfolio.get("disclaimer").cloned().unwrap_or(json!("")),
+            });
+
+            trace.push(TraceEvent {
+                ts_ms: now_ms(),
+                kind: "tool".to_string(),
+                name: "fetch_portfolio".to_string(),
+                ok: Some(true),
+                args: Some(json!({"estimate_mode": ctx["estimate_mode"]})),
+                result: Some(json!({
+                    "holding_count": summary.get("holding_count").cloned().unwrap_or(json!(null)),
+                    "current_value": summary.get("current_value").cloned().unwrap_or(json!(null)),
+                    "today_estimated_pnl": summary.get("today_estimated_pnl").cloned().unwrap_or(json!(null)),
+                })),
+            });
         }
-        ctx["portfolio"] = json!({
-            "as_of": portfolio.get("as_of").cloned().unwrap_or(json!("")),
-            "summary": summary,
-            "positions_top": positions,
-            "disclaimer": portfolio.get("disclaimer").cloned().unwrap_or(json!("")),
-        });
+        Err(message) => {
+            trace.push(TraceEvent {
+                ts_ms: now_ms(),
+                kind: "tool".to_string(),
+                name: "fetch_portfolio".to_string(),
+                ok: Some(false),
+                args: Some(json!({"estimate_mode": ctx["estimate_mode"]})),
+                result: Some(json!({"message": message})),
+            });
+        }
     }
 
     let mut fund_code = body.fund_id.trim().to_string();
@@ -767,45 +886,152 @@ async fn build_invest_context(state: &Arc<AppState>, body: &ChatStreamBody) -> V
     }
 
     if !fund_code.is_empty() {
-        if let Ok(estimate) = upstream_get_json(
+        match upstream_get_json(
             &state.http,
             &format!("/api/v1/funds/{}/intraday-estimate?estimate_mode={}", fund_code, ctx["estimate_mode"].as_str().unwrap_or("auto")),
         )
         .await
         {
-            ctx["fund_estimate"] = estimate;
+            Ok(estimate) => {
+                ctx["fund_estimate"] = estimate.clone();
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_intraday_estimate".to_string(),
+                    ok: Some(true),
+                    args: Some(json!({"fund_id": fund_code, "estimate_mode": ctx["estimate_mode"]})),
+                    result: Some(json!({
+                        "estimated_return": estimate.get("estimated_return").cloned().unwrap_or(json!(null)),
+                        "estimate_as_of": estimate.get("estimate_as_of").cloned().unwrap_or(json!(null)),
+                        "display_estimate_source_label": estimate.get("display_estimate_source_label").cloned().unwrap_or(json!(null)),
+                    })),
+                });
+            }
+            Err(message) => {
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_intraday_estimate".to_string(),
+                    ok: Some(false),
+                    args: Some(json!({"fund_id": fund_code, "estimate_mode": ctx["estimate_mode"]})),
+                    result: Some(json!({"message": message})),
+                });
+            }
         }
-        if let Ok(top_holdings) = upstream_get_json(
+
+        match upstream_get_json(
             &state.http,
             &format!("/api/v1/funds/{}/top-holdings?limit=10", fund_code),
         )
         .await
         {
-            ctx["fund_top_holdings"] = top_holdings;
+            Ok(top_holdings) => {
+                let count = top_holdings
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                ctx["fund_top_holdings"] = top_holdings;
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_top_holdings".to_string(),
+                    ok: Some(true),
+                    args: Some(json!({"fund_id": fund_code, "limit": 10})),
+                    result: Some(json!({"items": count})),
+                });
+            }
+            Err(message) => {
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_top_holdings".to_string(),
+                    ok: Some(false),
+                    args: Some(json!({"fund_id": fund_code, "limit": 10})),
+                    result: Some(json!({"message": message})),
+                });
+            }
         }
-        if let Ok(nav_trend) = upstream_get_json(
+
+        match upstream_get_json(
             &state.http,
             &format!("/api/v1/funds/{}/nav-trend?range=6m", fund_code),
         )
         .await
         {
-            let mut points: Vec<Value> = nav_trend
-                .get("points")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if points.len() > 60 {
-                points = points[points.len() - 60..].to_vec();
+            Ok(nav_trend) => {
+                let mut points: Vec<Value> = nav_trend
+                    .get("points")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let total_points = points.len();
+                if points.len() > 60 {
+                    points = points[points.len() - 60..].to_vec();
+                }
+                ctx["fund_nav_trend_tail"] = json!({
+                    "fund_id": nav_trend.get("fund_id").cloned().unwrap_or(json!(fund_code)),
+                    "range": nav_trend.get("range").cloned().unwrap_or(json!("6m")),
+                    "points": points,
+                });
+
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_nav_trend".to_string(),
+                    ok: Some(true),
+                    args: Some(json!({"fund_id": fund_code, "range": "6m"})),
+                    result: Some(json!({"points": total_points})),
+                });
             }
-            ctx["fund_nav_trend_tail"] = json!({
-                "fund_id": nav_trend.get("fund_id").cloned().unwrap_or(json!(fund_code)),
-                "range": nav_trend.get("range").cloned().unwrap_or(json!("6m")),
-                "points": points,
-            });
+            Err(message) => {
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_nav_trend".to_string(),
+                    ok: Some(false),
+                    args: Some(json!({"fund_id": fund_code, "range": "6m"})),
+                    result: Some(json!({"message": message})),
+                });
+            }
+        }
+
+        match upstream_get_json(
+            &state.http,
+            &format!("/api/v1/funds/{}/announcements?page_index=1&page_size=6&type=0", fund_code),
+        )
+        .await
+        {
+            Ok(ann) => {
+                let count = ann
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                ctx["fund_announcements"] = ann;
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_announcements".to_string(),
+                    ok: Some(true),
+                    args: Some(json!({"fund_id": fund_code, "page_size": 6, "type": 0})),
+                    result: Some(json!({"items": count})),
+                });
+            }
+            Err(message) => {
+                trace.push(TraceEvent {
+                    ts_ms: now_ms(),
+                    kind: "tool".to_string(),
+                    name: "fetch_announcements".to_string(),
+                    ok: Some(false),
+                    args: Some(json!({"fund_id": fund_code, "page_size": 6, "type": 0})),
+                    result: Some(json!({"message": message})),
+                });
+            }
         }
     }
 
-    ctx
+    (ctx, trace)
 }
 
 fn build_prompt(mode: AgentMode, convo: &Conversation, user_message: &str, invest_ctx: Option<Value>) -> String {
@@ -899,6 +1125,9 @@ pub async fn chat_stream(
         role: "user".to_string(),
         text: message.clone(),
         ts_ms: now_ms(),
+        meta: None,
+        ui_actions: vec![],
+        trace: vec![],
     });
     convo.messages = cap_messages(convo.messages.clone());
     convo.updated_at_ms = now_ms();
@@ -927,11 +1156,38 @@ pub async fn chat_stream(
         Err(message) => return sse_simple(format!("{message}")),
     };
 
-    let invest_ctx = if matches!(effective_mode, AgentMode::Invest) {
-        Some(build_invest_context(&state, &body).await)
+    let (invest_ctx, mut tool_trace) = if matches!(effective_mode, AgentMode::Invest) {
+        let (ctx, trace) = build_invest_context(&state, &body).await;
+        (Some(ctx), trace)
     } else {
-        None
+        (None, vec![])
     };
+
+    // Planner (lightweight): emit a plan trace event.
+    let steps = if matches!(effective_mode, AgentMode::Invest) {
+        vec![
+            "fetch_portfolio",
+            "fetch_intraday_estimate (optional)",
+            "fetch_top_holdings (optional)",
+            "fetch_nav_trend (optional)",
+            "fetch_announcements (optional)",
+            "llm_answer",
+        ]
+    } else {
+        vec!["llm_answer"]
+    };
+
+    let plan_event = TraceEvent {
+        ts_ms: now_ms(),
+        kind: "plan".to_string(),
+        name: "plan".to_string(),
+        ok: None,
+        args: Some(json!({ "mode": match effective_mode { AgentMode::Chat => "chat", AgentMode::Invest => "invest", AgentMode::Auto => "auto" }, "steps": steps })),
+        result: None,
+    };
+
+    // Prepend plan into trace.
+    tool_trace.insert(0, plan_event.clone());
 
     let prompt = build_prompt(effective_mode.clone(), &convo, &message, invest_ctx);
 
@@ -940,12 +1196,15 @@ pub async fn chat_stream(
     let llm_cfg = cfg.clone();
     let convo_id_clone = convo_id.clone();
     let agent_root = state.agent_root.clone();
+    let agent_store = state.agent_store.clone();
     let mode_label = match effective_mode {
         AgentMode::Chat => "chat",
         AgentMode::Invest => "invest",
         AgentMode::Auto => "auto",
     }
     .to_string();
+    let trace_to_persist = tool_trace.clone();
+    let first_user_message = message.clone();
 
     tauri::async_runtime::spawn(async move {
         // Let UI know which mode was used.
@@ -955,15 +1214,54 @@ pub async fn chat_stream(
             )))
             .await;
 
+        // Emit plan/tool traces.
+        for ev in trace_to_persist.iter() {
+            let event_name = if ev.kind == "plan" { "plan" } else { "tool" };
+            let payload = serde_json::to_string(ev).unwrap_or_else(|_| "{}".to_string());
+            let _ = tx
+                .send(Ok(Event::default().event(event_name).data(payload)))
+                .await;
+        }
+
+        let system = if mode_label == "chat" {
+            "你是 FundSight 的通用助手。可以闲聊、写作、做规划。回答简洁直接。".to_string()
+        } else {
+            "你是 FundSight 的基金投资助手。只输出可读文本，不要输出JSON。".to_string()
+        };
+
         let result = match llm_cfg.protocol {
             LlmProtocol::Openai_compatible => {
-                crate::openai_stream(client, llm_cfg.base_url, llm_cfg.model, api_key, prompt).await
+                crate::openai_stream_with_system(
+                    client,
+                    llm_cfg.base_url,
+                    llm_cfg.model,
+                    api_key,
+                    system.clone(),
+                    prompt,
+                )
+                .await
             }
             LlmProtocol::Openai_responses => {
-                crate::openai_responses_stream(client, llm_cfg.base_url, llm_cfg.model, api_key, prompt).await
+                crate::openai_responses_stream_with_system(
+                    client,
+                    llm_cfg.base_url,
+                    llm_cfg.model,
+                    api_key,
+                    system.clone(),
+                    prompt,
+                )
+                .await
             }
             LlmProtocol::Anthropic_messages => {
-                crate::anthropic_stream(client, llm_cfg.base_url, llm_cfg.model, api_key, prompt).await
+                crate::anthropic_stream_with_system(
+                    client,
+                    llm_cfg.base_url,
+                    llm_cfg.model,
+                    api_key,
+                    system.clone(),
+                    prompt,
+                )
+                .await
             }
         };
 
@@ -992,6 +1290,9 @@ pub async fn chat_stream(
                             role: "assistant".to_string(),
                             text: truncate_string_chars(full.trim(), 4000),
                             ts_ms: now_ms(),
+                            meta: Some(json!({"mode": mode_label})),
+                            ui_actions: vec![],
+                            trace: vec![],
                         });
                         convo.messages = cap_messages(convo.messages.clone());
                         convo.updated_at_ms = now_ms();

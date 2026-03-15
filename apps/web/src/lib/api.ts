@@ -269,10 +269,24 @@ export type AgentConversationView = {
   updated_at_ms: number;
 };
 
+export type AgentUiAction = { label: string; message: string; variant?: "primary" | "secondary" | "danger" };
+
+export type AgentTraceEvent = {
+  ts_ms: number;
+  kind: string;
+  name?: string;
+  ok?: boolean;
+  args?: unknown;
+  result?: unknown;
+};
+
 export type AgentMessage = {
   role: "assistant" | "user";
   text: string;
   ts_ms: number;
+  meta?: { mode?: string };
+  ui_actions?: AgentUiAction[];
+  trace?: AgentTraceEvent[];
 };
 
 export async function requestAgentConversations(): Promise<{ items: AgentConversationView[]; total: number }> {

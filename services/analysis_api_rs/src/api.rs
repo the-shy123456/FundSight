@@ -1,4 +1,4 @@
-use crate::{assistant, funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
+use crate::{announcements, assistant, funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -20,6 +20,15 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 pub struct EstimateModeQuery {
     pub estimate_mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnouncementsQuery {
+    pub page_index: Option<usize>,
+    pub page_size: Option<usize>,
+
+    #[serde(rename = "type")]
+    pub notice_type: Option<String>,
 }
 
 fn bad_request(message: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -48,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/funds/search", get(get_funds_search))
         .route("/api/v1/funds/{fund_id}/nav-trend", get(get_nav_trend))
         .route("/api/v1/funds/{fund_id}/top-holdings", get(get_top_holdings))
+        .route("/api/v1/funds/{fund_id}/announcements", get(get_fund_announcements))
         .route(
             "/api/v1/funds/{fund_id}/intraday-estimate",
             get(get_intraday_estimate),
@@ -663,6 +673,25 @@ async fn get_nav_trend(
             )
                 .into_response()
         }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_fund_announcements(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<String>,
+    Query(query): Query<AnnouncementsQuery>,
+) -> impl IntoResponse {
+    let page_index = query.page_index.unwrap_or(1);
+    let page_size = query.page_size.unwrap_or(8);
+    let notice_type = query.notice_type.as_deref().unwrap_or("0");
+
+    match announcements::fetch_announcements(&state.http, &fund_id, page_index, page_size, notice_type).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "message": error.to_string() })),

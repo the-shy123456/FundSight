@@ -1,4 +1,5 @@
 pub mod api;
+pub mod announcements;
 pub mod assistant;
 pub mod funds;
 pub mod holdings;

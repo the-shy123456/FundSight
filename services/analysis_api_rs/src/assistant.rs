@@ -1,7 +1,9 @@
-use crate::{holdings, metrics, nav, real_data};
+use crate::{announcements, holdings, metrics, nav, real_data};
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
+
+const ANNOUNCEMENT_EVIDENCE_LABEL: &str = "最新公告（东财 fundf10）";
 
 const PORTFOLIO_QUESTION_KEYWORDS: &[&str] = &[
     "组合",
@@ -126,6 +128,40 @@ fn suggestion_for(direction: &str, probability_up: f64, total_pnl: f64) -> Strin
     }
 }
 
+fn build_announcement_evidence(items: &[Value]) -> Option<Value> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let latest = &items[0];
+    let latest_title = latest
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let latest_date = latest
+        .get("date")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    let detail = if !latest_title.is_empty() {
+        format!(
+            "最近一条：{} {}",
+            if latest_date.is_empty() { "--" } else { latest_date },
+            latest_title
+        )
+    } else {
+        "用于辅助判断是否存在公告事件影响。".to_string()
+    };
+
+    Some(json!({
+        "label": ANNOUNCEMENT_EVIDENCE_LABEL,
+        "value": format!("近 {} 条", items.len()),
+        "detail": detail,
+    }))
+}
+
 fn evidence_items(
     source_label: &str,
     estimate_as_of: &str,
@@ -232,6 +268,17 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
                 m,
             );
 
+            let ann_payload = announcements::fetch_announcements(client, &lot.fund_id, 1, 3, "0")
+                .await
+                .ok();
+            let ann_items: Vec<Value> = ann_payload
+                .as_ref()
+                .and_then(|v| v.get("items"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let announcement_evidence = build_announcement_evidence(&ann_items);
+
             let item = json!({
                 "fund_id": lot.fund_id,
                 "name": name,
@@ -244,6 +291,8 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
                 "forecast": forecast,
                 "suggestion": suggestion,
                 "evidence": evidence,
+                "announcement_evidence": announcement_evidence,
+                "announcements": ann_items,
             });
 
             candidates.push((current_value, item));
@@ -379,7 +428,7 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
         summary.push_str(&format!(" 若你还有 ¥{:.0} 机动资金，建议分两到三笔观察回撤承接。", cash_available));
     }
 
-    let evidence = evidence_items(
+    let mut evidence = evidence_items(
         estimate
             .get("estimate_source_label")
             .and_then(|v| v.as_str())
@@ -388,6 +437,20 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
         estimated_return,
         m,
     );
+
+    let ann_payload = announcements::fetch_announcements(client, &fund_id, 1, 6, "0")
+        .await
+        .ok();
+    let ann_items: Vec<Value> = ann_payload
+        .as_ref()
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if let Some(ev) = build_announcement_evidence(&ann_items) {
+        evidence.push(ev);
+    }
 
     let actions = vec![
         json!({
@@ -417,6 +480,7 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
         },
         "summary": summary,
         "evidence": evidence,
+        "announcements": ann_items,
         "actions": actions,
         "forecast": forecast,
         "risks": [

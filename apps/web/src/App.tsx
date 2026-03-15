@@ -106,6 +106,7 @@ type ChatMessage = {
   text: string;
   meta?: { mode?: string };
   uiActions?: Array<{ label: string; message: string; variant?: "primary" | "secondary" | "danger" }>;
+  trace?: Array<{ ts_ms?: number; kind?: string; name?: string; ok?: boolean; args?: unknown; result?: unknown }>;
   announcements?: AnnouncementItem[];
   perFundAnnouncements?: Array<{ fund_id: string; name: string; items: AnnouncementItem[] }>;
 };
@@ -1600,6 +1601,9 @@ export default function App() {
       id: `${item.ts_ms}-${index}`,
       role: item.role,
       text: item.text,
+      meta: item.meta,
+      uiActions: item.ui_actions,
+      trace: item.trace,
     }));
   }
 
@@ -1774,6 +1778,34 @@ export default function App() {
                     const action = JSON.parse(data) as { buttons?: Array<{ label: string; message: string; variant?: "primary" | "secondary" | "danger" }> };
                     if (Array.isArray(action.buttons) && action.buttons.length) {
                       setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, uiActions: action.buttons } : item)));
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+
+                if (event === "tool" || event === "plan") {
+                  try {
+                    const payload = JSON.parse(data) as { ts_ms?: number; kind?: string; name?: string; ok?: boolean; args?: unknown; result?: unknown };
+                    const nextEvent = {
+                      ts_ms: payload.ts_ms ?? Date.now(),
+                      kind: payload.kind ?? event,
+                      name: payload.name,
+                      ok: payload.ok,
+                      args: payload.args,
+                      result: payload.result,
+                    };
+                    setChatMessages((current) => current.map((item) => (item.id === assistantMessageId ? { ...item, trace: [...(item.trace ?? []), nextEvent] } : item)));
+                  } catch {
+                    // ignore
+                  }
+                }
+
+                if (event === "title") {
+                  try {
+                    const payload = JSON.parse(data) as { conversation_id?: string; title?: string };
+                    if (payload.conversation_id && payload.title) {
+                      setAgentConversations((current) => current.map((item) => (item.id === payload.conversation_id ? { ...item, title: payload.title } : item)));
                     }
                   } catch {
                     // ignore
@@ -2273,6 +2305,28 @@ export default function App() {
                                   </button>
                                 ))}
                               </div>
+                            ) : null}
+
+                            {message.role === "assistant" && message.trace?.length ? (
+                              <details className="mt-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                                <summary className="cursor-pointer text-xs font-semibold text-gray-600">工具链路（{message.trace.length}）</summary>
+                                <div className="mt-2 space-y-2 text-[11px] text-gray-600">
+                                  {message.trace.map((ev, idx) => (
+                                    <div key={`${ev.kind}-${idx}`} className="rounded-md border border-gray-100 bg-white px-2 py-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="font-mono">
+                                          {ev.kind}{ev.name ? `:${ev.name}` : ""}
+                                        </div>
+                                        {typeof ev.ok === "boolean" ? (
+                                          <span className={`text-[10px] font-semibold ${ev.ok ? "text-emerald-600" : "text-rose-600"}`}>{ev.ok ? "OK" : "ERR"}</span>
+                                        ) : null}
+                                      </div>
+                                      {ev.args !== undefined ? <div className="mt-1 font-mono text-gray-500">args: {JSON.stringify(ev.args).slice(0, 600)}</div> : null}
+                                      {ev.result !== undefined ? <div className="mt-1 font-mono text-gray-500">result: {JSON.stringify(ev.result).slice(0, 600)}</div> : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
                             ) : null}
 
                             {message.role === "assistant" && message.announcements ? (

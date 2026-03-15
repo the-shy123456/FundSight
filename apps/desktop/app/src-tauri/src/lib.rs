@@ -568,11 +568,14 @@ fn anthropic_endpoint(base_url: &str) -> String {
     }
 }
 
-async fn openai_stream(
+const DEFAULT_FINANCE_SYSTEM: &str = "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。";
+
+pub(crate) async fn openai_stream_with_system(
     client: reqwest::Client,
     base_url: String,
     model: String,
     api_key: String,
+    system: String,
     prompt: String,
 ) -> Result<BoxStream<'static, Result<String, String>>, String> {
     let url = openai_endpoint(&base_url);
@@ -580,7 +583,7 @@ async fn openai_stream(
         "model": model,
         "stream": true,
         "messages": [
-            {"role": "system", "content": "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。"},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.6
@@ -634,6 +637,106 @@ async fn openai_stream(
                         .unwrap_or("");
                     if !delta.is_empty() {
                         yield delta.to_string();
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(parsed.boxed())
+}
+
+async fn openai_stream(
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    prompt: String,
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    openai_stream_with_system(
+        client,
+        base_url,
+        model,
+        api_key,
+        DEFAULT_FINANCE_SYSTEM.to_string(),
+        prompt,
+    )
+    .await
+}
+
+async fn openai_responses_stream_with_system(
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    system: String,
+    prompt: String,
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    let url = openai_responses_endpoint(&base_url);
+    let body = json!({
+        "model": model,
+        "stream": true,
+        "instructions": system,
+        "input": prompt,
+        "temperature": 0.6
+    });
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 LLM 失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("LLM 返回错误: {status} {text}"));
+    }
+
+    let stream = resp.bytes_stream();
+
+    let parsed = async_stream::try_stream! {
+        let mut buffer = String::new();
+        futures::pin_mut!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("读取流失败: {e}"))?;
+            let part = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&part);
+
+            while let Some(idx) = buffer.find("\n\n") {
+                let event = buffer[..idx].to_string();
+                buffer = buffer[idx + 2..].to_string();
+
+                for line in event.lines() {
+                    let line = line.trim();
+                    if !line.starts_with("data:") {
+                        continue;
+                    }
+                    let data = line.trim_start_matches("data:").trim();
+                    if data == "[DONE]" {
+                        return;
+                    }
+
+                    let value: serde_json::Value = serde_json::from_str(data).unwrap_or(json!({}));
+                    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if event_type == "response.output_text.delta" {
+                        let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+                        if !delta.is_empty() {
+                            yield delta.to_string();
+                        }
+                    } else if event_type == "response.completed" || event_type.ends_with(".done") {
+                        return;
+                    } else if event_type == "response.failed" {
+                        let message = value
+                            .get("error")
+                            .and_then(|v| v.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("OpenAI Responses failed");
+                        Err::<(), _>(message.to_string())?;
                     }
                 }
             }
@@ -724,11 +827,12 @@ async fn openai_responses_stream(
     Ok(parsed.boxed())
 }
 
-async fn anthropic_stream(
+async fn anthropic_stream_with_system(
     client: reqwest::Client,
     base_url: String,
     model: String,
     api_key: String,
+    system: String,
     prompt: String,
 ) -> Result<BoxStream<'static, Result<String, String>>, String> {
     let url = anthropic_endpoint(&base_url);
@@ -736,7 +840,7 @@ async fn anthropic_stream(
         "model": model,
         "stream": true,
         "max_tokens": 1024,
-        "system": "你是一个简洁直接的基金投资助手。只输出可读文本，不要输出JSON。",
+        "system": system,
         "messages": [
             {"role": "user", "content": prompt}
         ]
@@ -812,6 +916,24 @@ async fn anthropic_stream(
     };
 
     Ok(parsed.boxed())
+}
+
+async fn anthropic_stream(
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    prompt: String,
+) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    anthropic_stream_with_system(
+        client,
+        base_url,
+        model,
+        api_key,
+        DEFAULT_FINANCE_SYSTEM.to_string(),
+        prompt,
+    )
+    .await
 }
 
 async fn assistant_ask_stream(
