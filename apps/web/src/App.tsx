@@ -1987,7 +1987,7 @@ export default function App() {
       });
       setLlmHasKey(Boolean(payload.has_api_key));
       setLlmApiKey("");
-      setLlmConfigNotice("已保存。\n提示：建议先点“测试连接”确认中转站协议可用。");
+      setLlmConfigNotice("已保存。\n提示：建议先点“测试连接”确认协议/中转站可用。");
     } catch (error) {
       setLlmConfigNotice(error instanceof Error ? error.message : "保存失败，请稍后重试。 ");
     } finally {
@@ -3066,7 +3066,7 @@ export default function App() {
                             placeholder={llmHasKey ? "已保存（留空表示不修改）" : "sk-..."}
                             disabled={llmConfigLoading}
                           />
-                          {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已安全保存到系统凭据中（输入一次即可）。</div> : null}
+                          {llmHasKey ? <div className="mt-1 text-xs text-gray-500">API Key 已保存（输入一次即可）。</div> : null}
                         </div>
 
                         <div className="pt-4 flex justify-end gap-2 border-t border-gray-100">

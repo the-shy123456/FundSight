@@ -50,6 +50,11 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default)]
     pub model: String,
+
+    // Fallback storage (plain-text) for environments where keyring isn't reliable.
+    // NOTE: This is less secure than OS credential storage.
+    #[serde(default)]
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +329,29 @@ fn has_api_key() -> bool {
     keyring_entry().get_password().is_ok()
 }
 
+fn has_any_api_key(cfg: &LlmConfig) -> bool {
+    if has_api_key() {
+        return true;
+    }
+    !cfg.api_key.trim().is_empty()
+}
+
+pub(crate) fn resolve_api_key(cfg: &LlmConfig) -> Result<String, String> {
+    if let Ok(value) = keyring_entry().get_password() {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let fallback = cfg.api_key.trim();
+    if !fallback.is_empty() {
+        return Ok(fallback.to_string());
+    }
+
+    Err("读取 API Key 失败: No matching entry found in secure storage".to_string())
+}
+
 fn set_api_key(value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -346,7 +374,7 @@ async fn get_llm_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
         protocol: cfg.protocol,
         base_url: cfg.base_url,
         model: cfg.model,
-        has_api_key: has_api_key(),
+        has_api_key: has_any_api_key(&cfg),
     })
 }
 
@@ -371,10 +399,11 @@ async fn test_llm_config(State(state): State<Arc<AppState>>, Json(payload): Json
     let base_url = normalize_base_url(&payload.base_url);
     let model = payload.model.trim().to_string();
 
+    let current = state.llm.read().await.clone();
     let api_key = if !payload.api_key.trim().is_empty() {
         payload.api_key.trim().to_string()
     } else {
-        match get_api_key() {
+        match resolve_api_key(&current) {
             Ok(v) => v,
             Err(message) => {
                 return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
@@ -715,24 +744,36 @@ async fn update_llm_config(
             .into_response();
     }
 
-    // API Key: allow empty to keep existing stored key.
-    if !payload.api_key.trim().is_empty() {
-        if let Err(message) = set_api_key(&payload.api_key) {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();
+    let current = state.llm.read().await.clone();
+
+    // API Key: allow empty to keep existing key.
+    // We try to store into OS keyring, but also persist a plain-text fallback into llm_config.json
+    // to avoid "No matching entry" issues on some environments.
+    let incoming_key = payload.api_key.trim();
+    let fallback_key = if !incoming_key.is_empty() {
+        // Best-effort: store in keyring.
+        if let Err(message) = set_api_key(incoming_key) {
+            tracing::warn!("failed to store api key in keyring: {}", message);
         }
-    } else if !has_api_key() {
+        incoming_key.to_string()
+    } else {
+        current.api_key.clone()
+    };
+
+    let next = LlmConfig {
+        protocol: payload.protocol,
+        base_url: normalize_base_url(&payload.base_url),
+        model: payload.model.trim().to_string(),
+        api_key: fallback_key,
+    };
+
+    if !has_any_api_key(&next) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "message": "API Key 不能为空" })),
         )
             .into_response();
     }
-
-    let next = LlmConfig {
-        protocol: payload.protocol,
-        base_url: normalize_base_url(&payload.base_url),
-        model: payload.model.trim().to_string(),
-    };
 
     if let Err(message) = save_llm_config(&state.config_path, &next) {
         return (
@@ -750,7 +791,7 @@ async fn update_llm_config(
             "protocol": next.protocol,
             "base_url": next.base_url,
             "model": next.model,
-            "has_api_key": has_api_key(),
+            "has_api_key": has_any_api_key(&next),
         })),
     )
         .into_response()
@@ -1470,7 +1511,7 @@ async fn assistant_ask_stream(
             .into_response();
     }
 
-    let api_key = match get_api_key() {
+    let api_key = match resolve_api_key(&cfg) {
         Ok(value) => value,
         Err(message) => {
             return (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response();

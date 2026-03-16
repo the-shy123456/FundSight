@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    extract_six_digit_code, get_api_key, is_cancel, is_confirm, is_portfolio_question,
+    extract_six_digit_code, is_cancel, is_confirm, is_portfolio_question, resolve_api_key,
     load_assistant_state, now_ms, pretty_json_truncated, save_assistant_state, truncate_string_chars,
     upstream_delete_json, upstream_get_json, upstream_post_json, AppState, AssistantState,
     AssistantTurn, LlmProtocol,
@@ -601,7 +601,7 @@ async fn maybe_summarize_conversation(state: Arc<AppState>, convo: &mut Conversa
         return;
     }
 
-    let api_key = match get_api_key() {
+    let api_key = match resolve_api_key(&cfg) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -1179,7 +1179,7 @@ pub async fn chat_stream(
         return sse_simple(text);
     }
 
-    let api_key = match get_api_key() {
+    let api_key = match resolve_api_key(&cfg) {
         Ok(v) => v,
         Err(message) => {
             let text = message;
