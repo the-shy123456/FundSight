@@ -1145,15 +1145,65 @@ pub async fn chat_stream(
         let _ = store.save(&state.agent_root);
     }
 
+    let mode_label = match effective_mode {
+        AgentMode::Chat => "chat",
+        AgentMode::Invest => "invest",
+        AgentMode::Auto => "auto",
+    }
+    .to_string();
+
     // LLM config.
     let cfg = state.llm.read().await.clone();
     if cfg.base_url.trim().is_empty() || cfg.model.trim().is_empty() {
-        return sse_simple("请先在【设置 → AI】里配置协议/地址/模型。".to_string());
+        let text = "请先在【设置 → AI】里配置协议/地址/模型。".to_string();
+
+        convo.messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            text: text.clone(),
+            ts_ms: now_ms(),
+            meta: Some(json!({"mode": mode_label})),
+            ui_actions: vec![],
+            trace: vec![],
+        });
+        convo.messages = cap_messages(convo.messages.clone());
+        convo.updated_at_ms = now_ms();
+        let _ = save_conversation(&state.agent_root, &convo).await;
+
+        let view = view_from_conversation(&convo);
+        {
+            let mut store = state.agent_store.write().await;
+            store.upsert_view(view);
+            let _ = store.save(&state.agent_root);
+        }
+
+        return sse_simple(text);
     }
 
     let api_key = match get_api_key() {
         Ok(v) => v,
-        Err(message) => return sse_simple(format!("{message}")),
+        Err(message) => {
+            let text = message;
+            convo.messages.push(AgentMessage {
+                role: "assistant".to_string(),
+                text: text.clone(),
+                ts_ms: now_ms(),
+                meta: Some(json!({"mode": mode_label})),
+                ui_actions: vec![],
+                trace: vec![],
+            });
+            convo.messages = cap_messages(convo.messages.clone());
+            convo.updated_at_ms = now_ms();
+            let _ = save_conversation(&state.agent_root, &convo).await;
+
+            let view = view_from_conversation(&convo);
+            {
+                let mut store = state.agent_store.write().await;
+                store.upsert_view(view);
+                let _ = store.save(&state.agent_root);
+            }
+
+            return sse_simple(text);
+        }
     };
 
     let (invest_ctx, mut tool_trace) = if matches!(effective_mode, AgentMode::Invest) {
@@ -1209,12 +1259,6 @@ pub async fn chat_stream(
     let convo_id_clone = convo_id.clone();
     let agent_root = state.agent_root.clone();
     let agent_store = state.agent_store.clone();
-    let mode_label = match effective_mode {
-        AgentMode::Chat => "chat",
-        AgentMode::Invest => "invest",
-        AgentMode::Auto => "auto",
-    }
-    .to_string();
     let trace_to_persist = tool_trace.clone();
     let first_user_message = message.clone();
 
@@ -1294,8 +1338,30 @@ pub async fn chat_stream(
                             }
                         }
                         Err(message) => {
+                            let err_text = format!("（错误）{message}");
+                            let merged = if full.trim().is_empty() {
+                                err_text.clone()
+                            } else {
+                                format!("{}\n\n{}", full.trim(), err_text)
+                            };
+
+                            // Persist assistant message (including trace) so UI won't "lose" it after reload.
+                            if let Ok(mut convo) = load_conversation(&agent_root, &convo_id_clone).await {
+                                convo.messages.push(AgentMessage {
+                                    role: "assistant".to_string(),
+                                    text: truncate_string_chars(merged.trim(), 4000),
+                                    ts_ms: now_ms(),
+                                    meta: Some(json!({"mode": mode_label})),
+                                    ui_actions: vec![],
+                                    trace: trace_to_persist.clone(),
+                                });
+                                convo.messages = cap_messages(convo.messages.clone());
+                                convo.updated_at_ms = now_ms();
+                                let _ = save_conversation(&agent_root, &convo).await;
+                            }
+
                             let _ = tx
-                                .send(Ok(Event::default().event("error").data(message)))
+                                .send(Ok(Event::default().event("delta").data(err_text)))
                                 .await;
                             let _ = tx
                                 .send(Ok(Event::default().event("done").data("done")))
@@ -1306,10 +1372,24 @@ pub async fn chat_stream(
                 }
 
                 if !got_delta || full.trim().is_empty() {
+                    let text = "模型没有返回任何内容（常见原因：中转站不支持 stream、协议选错、或模型无权限）。请到【设置 → AI】先点“测试连接”，再切换协议重试。".to_string();
+
+                    if let Ok(mut convo) = load_conversation(&agent_root, &convo_id_clone).await {
+                        convo.messages.push(AgentMessage {
+                            role: "assistant".to_string(),
+                            text: truncate_string_chars(text.trim(), 4000),
+                            ts_ms: now_ms(),
+                            meta: Some(json!({"mode": mode_label})),
+                            ui_actions: vec![],
+                            trace: trace_to_persist.clone(),
+                        });
+                        convo.messages = cap_messages(convo.messages.clone());
+                        convo.updated_at_ms = now_ms();
+                        let _ = save_conversation(&agent_root, &convo).await;
+                    }
+
                     let _ = tx
-                        .send(Ok(Event::default().event("error").data(
-                            "模型没有返回任何内容（常见原因：中转站不支持 stream、协议选错 new api/sub2、或返回的是非 SSE 流）。请到【设置 → AI】先点“测试连接”，再切换协议重试。",
-                        )))
+                        .send(Ok(Event::default().event("delta").data(text)))
                         .await;
                     let _ = tx
                         .send(Ok(Event::default().event("done").data("done")))
@@ -1325,7 +1405,7 @@ pub async fn chat_stream(
                         ts_ms: now_ms(),
                         meta: Some(json!({"mode": mode_label})),
                         ui_actions: vec![],
-                        trace: vec![],
+                        trace: trace_to_persist.clone(),
                     });
                     convo.messages = cap_messages(convo.messages.clone());
                     convo.updated_at_ms = now_ms();
@@ -1337,8 +1417,24 @@ pub async fn chat_stream(
                     .await;
             }
             Err(message) => {
+                let text = format!("（错误）{message}");
+
+                if let Ok(mut convo) = load_conversation(&agent_root, &convo_id_clone).await {
+                    convo.messages.push(AgentMessage {
+                        role: "assistant".to_string(),
+                        text: truncate_string_chars(text.trim(), 4000),
+                        ts_ms: now_ms(),
+                        meta: Some(json!({"mode": mode_label})),
+                        ui_actions: vec![],
+                        trace: trace_to_persist.clone(),
+                    });
+                    convo.messages = cap_messages(convo.messages.clone());
+                    convo.updated_at_ms = now_ms();
+                    let _ = save_conversation(&agent_root, &convo).await;
+                }
+
                 let _ = tx
-                    .send(Ok(Event::default().event("error").data(message)))
+                    .send(Ok(Event::default().event("delta").data(text)))
                     .await;
                 let _ = tx
                     .send(Ok(Event::default().event("done").data("done")))

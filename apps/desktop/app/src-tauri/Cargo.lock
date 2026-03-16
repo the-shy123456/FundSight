@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "fundsight-desktop"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "analysis_api_rs",
  "async-stream",
