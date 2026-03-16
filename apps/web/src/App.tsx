@@ -1815,12 +1815,14 @@ export default function App() {
             },
             {
               onDelta: (text) => {
+                // Keep the placeholder visible until we get the first non-whitespace token.
+                if (!text) return;
                 setChatMessages((current) =>
-                  current.map((item) =>
-                    item.id === assistantMessageId
-                      ? { ...item, text: item.text === placeholder ? text : `${item.text}${text}` }
-                      : item,
-                  ),
+                  current.map((item) => {
+                    if (item.id !== assistantMessageId) return item;
+                    if (item.text === placeholder && String(text).trim() === "") return item;
+                    return { ...item, text: item.text === placeholder ? text : `${item.text}${text}` };
+                  }),
                 );
               },
               onEvent: (event, data) => {
@@ -1907,12 +1909,13 @@ export default function App() {
         },
         {
           onDelta: (text) => {
+            if (!text) return;
             setChatMessages((current) =>
-              current.map((item) =>
-                item.id === assistantMessageId
-                  ? { ...item, text: item.text === placeholder ? text : `${item.text}${text}` }
-                  : item,
-              ),
+              current.map((item) => {
+                if (item.id !== assistantMessageId) return item;
+                if (item.text === placeholder && String(text).trim() === "") return item;
+                return { ...item, text: item.text === placeholder ? text : `${item.text}${text}` };
+              }),
             );
           },
         },
@@ -2430,7 +2433,16 @@ export default function App() {
                                 mode: <span className="font-mono">{message.meta.mode}</span>
                               </div>
                             ) : null}
-                            <div className="whitespace-pre-line">{message.text}</div>
+                            <div className="whitespace-pre-line">
+                              {message.text === "（思考中…）" ? (
+                                <span className="inline-flex items-center gap-2 text-gray-500">
+                                  <LoaderCircle className="h-4 w-4 animate-spin text-blue-500" />
+                                  <span>思考中…</span>
+                                </span>
+                              ) : (
+                                message.text
+                              )}
+                            </div>
 
                             {message.role === "assistant" && message.uiActions?.length ? (
                               <div className="mt-3 flex flex-wrap gap-2">
