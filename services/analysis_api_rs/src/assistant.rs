@@ -1,4 +1,4 @@
-use crate::{announcements, holdings, metrics, nav, real_data};
+use crate::{announcements, holdings, metrics, nav, real_data, theme};
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -452,6 +452,8 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
         evidence.push(ev);
     }
 
+    let inferred = theme::infer_themes(client, &fund_id, &name).await;
+
     let actions = vec![
         json!({
             "title": "继续持有",
@@ -475,7 +477,8 @@ pub async fn ask(client: &Client, payload: &Value) -> Result<Value> {
         "fund": {
             "fund_id": fund_id,
             "name": name,
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_label": "",
         },
         "summary": summary,

@@ -1,6 +1,6 @@
 # FundSight 开发进度（自动播报源）
 
-更新时间：2026-03-13
+更新时间：2026-03-16
 
 ## 当前目标
 把现有 Python `services/analysis_api` 的 HTTP API 逐步迁移为 Rust（优先保证前端接口兼容），再做 Windows 端跑腿与可打包。
@@ -25,4 +25,4 @@
 1. 继续提升 Rust 版 assistant：接入 LLM（当前是规则版），补 announcement_evidence/announcements 等证据结构。
 2. holdings/ocr：接 Windows 原生 OCR（当前只做联调占位：可解析 CSV 文本）。
 3. 桌面端：Windows 真机打包验证（Tauri + Rust 上游自启动）。
-4. Rust 版 portfolio snapshot：补齐 theme/risk_level 等展示字段（当前多数为空）。
+4. Rust 版 portfolio snapshot：补齐 theme（按养基宝模块推断）+ themes 候选列表，用于前端下拉选择（当前已接入，下一步是前端单选 + 本地覆盖持久化）。

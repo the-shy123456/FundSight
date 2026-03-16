@@ -1,3 +1,4 @@
+use crate::theme;
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use reqwest::Client;
@@ -10,13 +11,15 @@ pub async fn search_funds(client: &Client, query: &str, limit: usize) -> Result<
         return Ok(vec![]);
     }
 
-    // If it's already a fund code, just return it.
+    // If it's already a fund code, try to infer its theme via overview (track target / fund type).
     if clean.len() == 6 && clean.chars().all(|c| c.is_ascii_digit()) {
+        let inferred = theme::infer_themes(client, clean, "").await;
         return Ok(vec![json!({
             "fund_id": clean,
             "name": clean,
             "category": "",
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_level": "",
         })]);
     }
@@ -63,12 +66,14 @@ pub async fn search_funds(client: &Client, query: &str, limit: usize) -> Result<
             .and_then(|v| v.as_str())
             .unwrap_or(code)
             .trim();
+        let inferred = theme::infer_themes(client, code, name).await;
         results.push(json!({
             "fund_id": code,
             "name": name,
             "name_display": name,
             "category": "",
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_level": "",
         }));
         if results.len() >= limit {
@@ -155,13 +160,15 @@ pub async fn fetch_catalog(client: &Client, page: usize, page_size: usize) -> Re
         if name.is_empty() {
             continue;
         }
+        let inferred = theme::infer_themes(client, fund_id, name).await;
         items.push(json!({
             "fund_id": fund_id,
             "name": name,
             "name_display": name,
             "latest_nav": (latest_nav * 10000.0).round() / 10000.0,
             "category": "",
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_level": "",
         }));
     }

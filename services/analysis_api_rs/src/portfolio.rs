@@ -1,5 +1,6 @@
 use crate::holdings::HoldingLot;
 use crate::real_data;
+use crate::theme;
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -15,6 +16,8 @@ pub async fn build_portfolio_snapshot(client: &Client, holdings: &[HoldingLot]) 
             .and_then(|v| v.as_str())
             .unwrap_or(lot.fund_id.as_str())
             .to_string();
+
+        let inferred = theme::infer_themes(client, &lot.fund_id, &name).await;
 
         let latest_nav = estimate.get("latest_nav").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let estimated_nav = estimate
@@ -38,7 +41,8 @@ pub async fn build_portfolio_snapshot(client: &Client, holdings: &[HoldingLot]) 
             "fund_id": lot.fund_id,
             "name": name,
             "name_display": name,
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_level": "",
             "shares": (shares * 10000.0).round() / 10000.0,
             "unit_cost": (lot.unit_cost * 10000.0).round() / 10000.0,

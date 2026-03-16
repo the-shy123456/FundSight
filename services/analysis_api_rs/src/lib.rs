@@ -10,4 +10,5 @@ pub mod portfolio;
 pub mod real_data;
 pub mod storage;
 pub mod top_holdings;
+pub mod theme;
 pub mod watchlist;

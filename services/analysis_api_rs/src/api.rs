@@ -1,4 +1,4 @@
-use crate::{announcements, assistant, funds, holdings, nav, portfolio, real_data, top_holdings, watchlist};
+use crate::{announcements, assistant, funds, holdings, nav, portfolio, real_data, theme, top_holdings, watchlist};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -177,11 +177,13 @@ async fn get_portfolio_intraday(
             "低"
         };
 
+        let inferred = theme::infer_themes(&state.http, &lot.fund_id, &name).await;
         contributions.push(json!({
             "fund_id": lot.fund_id,
             "name": name,
             "name_display": name,
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "today_estimated_pnl": (today_estimated_pnl * 100.0).round() / 100.0,
             "confidence_label": confidence_label,
             "weight": (weight * 10000.0).round() / 10000.0,
@@ -472,11 +474,13 @@ async fn get_watchlist(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             Err(_) => fund_id.clone(),
         };
 
+        let inferred = theme::infer_themes(&state.http, &fund_id, &name).await;
         items.push(json!({
             "fund_id": fund_id,
             "name": name,
             "name_display": name,
-            "theme": "",
+            "theme": inferred.theme,
+            "themes": inferred.themes,
             "risk_level": "",
         }));
     }
@@ -545,10 +549,13 @@ async fn get_watchlist_intraday(
                     .get("latest_nav")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0);
+                let inferred = theme::infer_themes(&state.http, &fund_id, name).await;
                 items.push(json!({
                     "fund_id": fund_id,
                     "name": name,
                     "name_display": name,
+                    "theme": inferred.theme,
+                    "themes": inferred.themes,
                     "estimated_return": estimated_return,
                     "latest_nav": latest_nav,
                     "estimate_mode": "official",
