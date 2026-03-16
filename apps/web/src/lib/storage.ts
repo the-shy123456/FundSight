@@ -9,6 +9,7 @@ export const STORAGE_KEYS = {
   holdingFirstSeenAt: "fund-workbench-holding-first-seen-at",
   appSettings: "fundsight-app-settings",
   lastActiveTab: "fundsight-last-active-tab",
+  fundThemeOverrides: "fundsight-fund-theme-overrides-v1",
 } as const;
 
 export const DEFAULT_ROWS: ManualRow[] = [
@@ -192,4 +193,38 @@ export function restoreLastActiveTab(): "portfolio" | "watchlist" | "library" | 
 
 export function saveLastActiveTab(value: "portfolio" | "watchlist" | "library" | "config"): void {
   localStorage.setItem(STORAGE_KEYS.lastActiveTab, value);
+}
+
+export function restoreFundThemeOverrides(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.fundThemeOverrides);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const out: Record<string, string> = {};
+    for (const [fundId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const cleanId = String(fundId || "").trim();
+      if (!/^\d{6}$/.test(cleanId)) continue;
+      const cleanTheme = String(value ?? "").trim();
+      if (!cleanTheme) continue;
+      out[cleanId] = cleanTheme;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveFundThemeOverrides(value: Record<string, string>): void {
+  // Store only non-empty overrides.
+  const out: Record<string, string> = {};
+  for (const [fundId, theme] of Object.entries(value || {})) {
+    const cleanId = String(fundId || "").trim();
+    if (!/^\d{6}$/.test(cleanId)) continue;
+    const cleanTheme = String(theme ?? "").trim();
+    if (!cleanTheme) continue;
+    out[cleanId] = cleanTheme;
+  }
+  localStorage.setItem(STORAGE_KEYS.fundThemeOverrides, JSON.stringify(out));
 }

@@ -66,6 +66,7 @@ export interface PortfolioPosition {
   name_display?: string;
   category?: string;
   theme?: string;
+  themes?: string[];
   risk_level?: string;
   current_value?: number;
   market_value?: number;
@@ -123,6 +124,7 @@ export interface IntradayContribution {
   name: string;
   name_display?: string;
   theme?: string;
+  themes?: string[];
   today_estimated_pnl?: number;
   confidence_label?: string;
   weight?: number;
@@ -156,6 +158,7 @@ export interface WatchlistItem {
   name: string;
   name_display?: string;
   theme?: string;
+  themes?: string[];
   risk_level?: string;
 }
 
@@ -169,6 +172,7 @@ export interface WatchlistIntradayItem extends IntradayEstimate {
   name?: string;
   name_display?: string;
   theme?: string;
+  themes?: string[];
   estimated_return?: number;
   latest_nav?: number;
 }
@@ -184,6 +188,7 @@ export interface FundCatalogItem {
   name_display?: string;
   category?: string;
   theme?: string;
+  themes?: string[];
   risk_level?: string;
   latest_nav?: number;
 }
@@ -263,7 +268,7 @@ export interface AssistantPortfolioMeta {
 }
 
 export interface AssistantResponse {
-  fund?: { fund_id?: string; name?: string; theme?: string; risk_label?: string };
+  fund?: { fund_id?: string; name?: string; theme?: string; themes?: string[]; risk_label?: string };
   summary?: string;
   evidence?: Array<{ label: string; value: string; detail: string }>;
   actions?: Array<{ title: string; fit: string; detail: string }>;

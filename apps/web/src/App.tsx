@@ -78,7 +78,10 @@ import {
   saveManualRows,
   saveAppSettings,
   saveLastActiveTab,
+  restoreFundThemeOverrides,
+  saveFundThemeOverrides,
 } from "./lib/storage";
+import { FUND_THEME_MODULES, uniqStrings } from "./lib/fund-theme-modules";
 import type {
   AiConfig,
   AnnouncementItem,
@@ -133,6 +136,7 @@ type DetailFundInfo = {
   name?: string;
   name_display?: string;
   theme?: string;
+  themes?: string[];
   holdings_disclosure_date?: string;
 };
 
@@ -697,6 +701,7 @@ export default function App() {
   const [agentSummary, setAgentSummary] = useState("");
   const [agentConvoLoading, setAgentConvoLoading] = useState(false);
   const [holdingFirstSeenAtMap, setHoldingFirstSeenAtMap] = useState<Record<string, number>>(() => restoreHoldingFirstSeenAt());
+  const [fundThemeOverrides, setFundThemeOverrides] = useState<Record<string, string>>(() => restoreFundThemeOverrides());
   const [activeFundId, setActiveFundId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailFundId, setDetailFundId] = useState("");
@@ -784,11 +789,50 @@ export default function App() {
     saveHoldingFirstSeenAt(holdingFirstSeenAtMap);
   }, [holdingFirstSeenAtMap]);
 
+  useEffect(() => {
+    saveFundThemeOverrides(fundThemeOverrides);
+  }, [fundThemeOverrides]);
+
+  function resolveEffectiveTheme(fundId: string, theme?: string | null): string {
+    const cleanId = normalizeFundCode(fundId) || String(fundId || "").trim();
+    const override = (fundThemeOverrides[cleanId] || "").trim();
+    return normalizeTheme(override || (theme ?? ""));
+  }
+
+  function updateFundThemeOverride(fundId: string, nextTheme: string, displayName?: string) {
+    const cleanId = normalizeFundCode(fundId) || String(fundId || "").trim();
+    const cleanTheme = String(nextTheme || "").trim();
+
+    setFundThemeOverrides((current) => {
+      const next = { ...current };
+      if (!cleanTheme) {
+        delete next[cleanId];
+      } else {
+        next[cleanId] = cleanTheme;
+      }
+      return next;
+    });
+
+    if (cleanTheme) {
+      setPageNotice(`已设置 ${displayName || cleanId} 主题为：${cleanTheme}`);
+    } else {
+      setPageNotice(`已恢复 ${displayName || cleanId} 主题为系统推荐。`);
+    }
+  }
+
+  function buildThemeSelectGroups(systemTheme: string, candidates?: string[] | null) {
+    const recommended = uniqStrings([systemTheme, ...(candidates ?? [])]).filter((item) => item !== systemTheme ? true : true);
+    const normalizedRecommended = uniqStrings(recommended.map((item) => normalizeTheme(item))).filter(Boolean);
+    const normalizedAll = FUND_THEME_MODULES.slice();
+    const rest = normalizedAll.filter((item) => !normalizedRecommended.includes(item));
+    return { recommended: normalizedRecommended, rest };
+  }
+
   const catalogThemeFilterValue = catalogThemeFilter.trim();
   const catalogVisibleItems = useMemo(() => {
     if (!catalogThemeFilterValue) return catalogItems;
-    return catalogItems.filter((item) => normalizeTheme(item.theme) === catalogThemeFilterValue);
-  }, [catalogItems, catalogThemeFilterValue]);
+    return catalogItems.filter((item) => resolveEffectiveTheme(item.fund_id, item.theme) === catalogThemeFilterValue);
+  }, [catalogItems, catalogThemeFilterValue, fundThemeOverrides]);
   const watchlistIdSet = useMemo(() => new Set(watchlistItems.map((item) => item.fund_id)), [watchlistItems]);
   const watchlistIntradayMap = useMemo(() => {
     const map = new Map<string, WatchlistIntradayItem>();
@@ -822,6 +866,14 @@ export default function App() {
     if (!code) return null;
     return manualRows.find((row) => normalizeFundCode(row.fundQuery) === code) ?? null;
   }, [manualRows, detailFundId]);
+
+  const detailSystemTheme = normalizeTheme(detailFund?.theme);
+  const detailEffectiveTheme = resolveEffectiveTheme(detailFundId, detailFund?.theme);
+  const { recommended: detailThemeRecommended, rest: detailThemeRest } = buildThemeSelectGroups(detailSystemTheme, detailFund?.themes);
+  const detailThemeExtraOptions = detailEffectiveTheme && !detailThemeRecommended.includes(detailEffectiveTheme) && !detailThemeRest.includes(detailEffectiveTheme)
+    ? [detailEffectiveTheme]
+    : [];
+
   const detailHoldingsSorted = useMemo(() => {
     const items = detailHoldings?.items ?? [];
     return [...items].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
@@ -842,13 +894,13 @@ export default function App() {
   }, [detailHoldings]);
   const relatedSectorChips = useMemo(() => {
     const chips: string[] = [];
-    const theme = normalizeTheme(detailFund?.theme);
+    const theme = resolveEffectiveTheme(detailFundId, detailFund?.theme);
     if (theme) chips.push(theme);
     relatedIndustries.forEach((industry) => {
       if (!chips.includes(industry)) chips.push(industry);
     });
     return chips;
-  }, [detailFund?.theme, relatedIndustries]);
+  }, [detailFundId, detailFund?.theme, relatedIndustries, fundThemeOverrides]);
   const navPoints = detailNavTrend?.points ?? [];
   const navLatest = useMemo(() => (navPoints.length ? navPoints[navPoints.length - 1]?.nav ?? 0 : 0), [navPoints]);
   const navReturnSeries = useMemo(() => computeReturnSeries(navPoints), [navPoints]);
@@ -2203,6 +2255,65 @@ export default function App() {
                                 {item.is_real_data ? "真实参考" : "原型估算"}
                               </span>
                             </div>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] text-gray-400">主题</span>
+                              {(() => {
+                                const systemTheme = normalizeTheme(item.theme);
+                                const effectiveTheme = resolveEffectiveTheme(item.fund_id, item.theme);
+                                const { recommended, rest } = buildThemeSelectGroups(systemTheme, item.themes);
+                                const extraOptions = effectiveTheme && !recommended.includes(effectiveTheme) && !rest.includes(effectiveTheme) ? [effectiveTheme] : [];
+
+                                return (
+                                  <>
+                                    <select
+                                      value={effectiveTheme || ""}
+                                      onChange={(event) => {
+                                        const value = event.target.value;
+                                        if (value === "__auto__") {
+                                          updateFundThemeOverride(item.fund_id, "", resolveFundName(item.name, item.name_display) || item.name || item.fund_id);
+                                          return;
+                                        }
+                                        if (!value) {
+                                          updateFundThemeOverride(item.fund_id, "", resolveFundName(item.name, item.name_display) || item.name || item.fund_id);
+                                          return;
+                                        }
+                                        updateFundThemeOverride(item.fund_id, value, resolveFundName(item.name, item.name_display) || item.name || item.fund_id);
+                                      }}
+                                      className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 focus:border-blue-500 outline-none"
+                                      title={fundThemeOverrides[item.fund_id] ? "已手动覆盖" : "系统推荐"}
+                                    >
+                                      <option value="__auto__">跟随系统推荐</option>
+                                      <option value="">（无主题）</option>
+                                      {extraOptions.map((value) => (
+                                        <option key={`extra-pos-${item.fund_id}-${value}`} value={value}>
+                                          {value}
+                                        </option>
+                                      ))}
+                                      {recommended.length ? (
+                                        <optgroup label="推荐">
+                                          {recommended.map((value) => (
+                                            <option key={`rec-pos-${item.fund_id}-${value}`} value={value}>
+                                              {value}
+                                            </option>
+                                          ))}
+                                        </optgroup>
+                                      ) : null}
+                                      <optgroup label="全部模块">
+                                        {rest.map((value) => (
+                                          <option key={`all-pos-${item.fund_id}-${value}`} value={value}>
+                                            {value}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    </select>
+                                    {fundThemeOverrides[item.fund_id] ? (
+                                      <span className="px-1.5 py-0.5 rounded-full text-[10px] border border-amber-200 text-amber-700 bg-amber-50">手动</span>
+                                    ) : null}
+                                  </>
+                                );
+                              })()}
+                            </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900 font-medium">{formatPlainAmount(item.current_value ?? item.market_value)}</td>
                           <td className={`px-6 py-4 whitespace-nowrap text-right text-sm font-bold ${toneClass(item.today_estimated_return ?? item.today_return)}`}>{formatSignedPercent(item.today_estimated_return ?? item.today_return)}</td>
@@ -2507,18 +2618,19 @@ export default function App() {
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-600">
-                              {normalizeTheme(item.theme) ? (
+                              {resolveEffectiveTheme(item.fund_id, item.theme) ? (
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const theme = normalizeTheme(item.theme);
+                                    const theme = resolveEffectiveTheme(item.fund_id, item.theme);
                                     if (!theme) return;
                                     setCatalogThemeFilter(theme);
                                     setPageNotice(`已在当前结果中按主题筛选：${theme}`);
                                   }}
                                   className="px-2.5 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-medium"
+                                  title={fundThemeOverrides[item.fund_id] ? "已手动覆盖" : "系统推荐"}
                                 >
-                                  {normalizeTheme(item.theme)}
+                                  {resolveEffectiveTheme(item.fund_id, item.theme)}
                                 </button>
                               ) : (
                                 "--"
@@ -2612,16 +2724,62 @@ export default function App() {
                         const estimatedReturn = intradayItem?.estimated_return;
                         const latestNav = intradayItem?.latest_nav;
                         const displayName = resolveFundName(item.name, item.name_display) || item.name || item.fund_id;
+                        const systemTheme = normalizeTheme(item.theme);
+                        const effectiveTheme = resolveEffectiveTheme(item.fund_id, item.theme);
+                        const { recommended, rest } = buildThemeSelectGroups(systemTheme, item.themes);
+                        const extraOptions = effectiveTheme && !recommended.includes(effectiveTheme) && !rest.includes(effectiveTheme) ? [effectiveTheme] : [];
                         return (
                           <tr key={item.fund_id}>
                             <td className="px-6 py-4">
                               <div className="text-sm font-medium text-gray-900">{displayName}</div>
                               <div className="text-xs text-gray-500 mt-0.5">{item.fund_id}</div>
-                              {normalizeTheme(item.theme) ? (
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  <span className="px-2 py-0.5 rounded-full text-[10px] border border-blue-200 text-blue-700 bg-blue-50">{normalizeTheme(item.theme)}</span>
-                                </div>
-                              ) : null}
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <span className="text-[10px] text-gray-400">主题</span>
+                                <select
+                                  value={effectiveTheme || ""}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    if (value === "__auto__") {
+                                      updateFundThemeOverride(item.fund_id, "", displayName);
+                                      return;
+                                    }
+                                    if (!value) {
+                                      updateFundThemeOverride(item.fund_id, "", displayName);
+                                      return;
+                                    }
+                                    updateFundThemeOverride(item.fund_id, value, displayName);
+                                  }}
+                                  className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 focus:border-blue-500 outline-none"
+                                  title={fundThemeOverrides[item.fund_id] ? "已手动覆盖" : "系统推荐"}
+                                >
+                                  <option value="__auto__">跟随系统推荐</option>
+                                  <option value="">（无主题）</option>
+                                  {extraOptions.map((value) => (
+                                    <option key={`extra-${item.fund_id}-${value}`} value={value}>
+                                      {value}
+                                    </option>
+                                  ))}
+                                  {recommended.length ? (
+                                    <optgroup label="推荐">
+                                      {recommended.map((value) => (
+                                        <option key={`rec-${item.fund_id}-${value}`} value={value}>
+                                          {value}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  ) : null}
+                                  <optgroup label="全部模块">
+                                    {rest.map((value) => (
+                                      <option key={`all-${item.fund_id}-${value}`} value={value}>
+                                        {value}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                </select>
+                                {fundThemeOverrides[item.fund_id] ? (
+                                  <span className="px-1.5 py-0.5 rounded-full text-[10px] border border-amber-200 text-amber-700 bg-amber-50">手动</span>
+                                ) : null}
+                              </div>
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-600">{estimateModeLabel}</td>
                             <td className={`px-6 py-4 text-right text-sm font-semibold ${toneClass(estimatedReturn)}`}>
@@ -3011,6 +3169,55 @@ export default function App() {
                     <span className="ml-2 text-sm font-medium text-gray-500">{detailFund?.fund_id || detailFundId}</span>
                   </h3>
                   <p className="text-xs text-gray-500 mt-1">收益率曲线覆盖从成立到现在，可切换不同区间。</p>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-gray-500">主题</span>
+                    <select
+                      value={detailEffectiveTheme || ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const displayName = resolveFundName(detailFund?.name, detailFund?.name_display) || detailFund?.name || detailFundId;
+                        if (value === "__auto__") {
+                          updateFundThemeOverride(detailFundId, "", displayName);
+                          return;
+                        }
+                        if (!value) {
+                          updateFundThemeOverride(detailFundId, "", displayName);
+                          return;
+                        }
+                        updateFundThemeOverride(detailFundId, value, displayName);
+                      }}
+                      className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 outline-none"
+                      title={fundThemeOverrides[detailFundId] ? "已手动覆盖" : "系统推荐"}
+                    >
+                      <option value="__auto__">跟随系统推荐</option>
+                      <option value="">（无主题）</option>
+                      {detailThemeExtraOptions.map((value) => (
+                        <option key={`detail-extra-${detailFundId}-${value}`} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                      {detailThemeRecommended.length ? (
+                        <optgroup label="推荐">
+                          {detailThemeRecommended.map((value) => (
+                            <option key={`detail-rec-${detailFundId}-${value}`} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      <optgroup label="全部模块">
+                        {detailThemeRest.map((value) => (
+                          <option key={`detail-all-${detailFundId}-${value}`} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    {fundThemeOverrides[detailFundId] ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] border border-amber-200 text-amber-700 bg-amber-50">手动</span>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button type="button" onClick={closeFundDetail} className="text-gray-400 hover:text-gray-700 p-1 rounded" aria-label="关闭详情">
