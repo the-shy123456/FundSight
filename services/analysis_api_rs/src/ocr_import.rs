@@ -127,18 +127,10 @@ fn parse_amount_token(raw: &str, unit: &str) -> Option<f64> {
 }
 
 fn extract_amount_value(line: &str) -> String {
-    // Skip obvious non-amount rows.
-    if line.contains('%') || line.starts_with('+') || line.starts_with('-') {
-        return "".to_string();
-    }
-
-    // Avoid treating dates/time-only rows as amount anchors.
-    if !Regex::new(r"[\p{Han}A-Za-z]").unwrap().is_match(line) {
-        return "".to_string();
-    }
-
     // Prefer currency patterns, support comma + 万.
-    let currency_re = Regex::new(r"[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)(万?)").unwrap();
+    // Also tolerate common OCR mistakes: `羊` misread as `¥`.
+    let currency_re =
+        Regex::new(r"(?:[¥￥]|羊)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)(万?)").unwrap();
     if let Some(caps) = currency_re.captures(line) {
         let number = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -147,6 +139,21 @@ fn extract_amount_value(line: &str) -> String {
                 return format!("{v:.2}");
             }
         }
+    }
+
+    // Skip profit-only rows.
+    if line.starts_with('+') || line.starts_with('-') {
+        return "".to_string();
+    }
+
+    // If there's a % but no currency, it's likely a return/profit row.
+    if line.contains('%') {
+        return "".to_string();
+    }
+
+    // Avoid treating dates/time-only rows as amount anchors.
+    if !Regex::new(r"[\p{Han}A-Za-z]").unwrap().is_match(line) {
+        return "".to_string();
     }
 
     // Fallback: scan numbers and pick a reasonable candidate (amount is usually the largest).
@@ -547,7 +554,7 @@ $transform = New-Object Windows.Graphics.Imaging.BitmapTransform
 $w = [uint32]$decoder.PixelWidth
 $h = [uint32]$decoder.PixelHeight
 $scale = 1
-if ($w -lt 1600) { $scale = 2 }
+if ($w -lt 1600) {{ $scale = 2 }}
 $scaledW = [uint32]([math]::Min($w * $scale, 4000))
 $scaledH = [uint32]([math]::Min($h * $scale, 4000))
 $transform.ScaledWidth = $scaledW
