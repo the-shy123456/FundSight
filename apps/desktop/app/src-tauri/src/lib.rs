@@ -370,11 +370,12 @@ fn get_api_key() -> Result<String, String> {
 
 async fn get_llm_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cfg = state.llm.read().await.clone();
+    let has_key = has_any_api_key(&cfg);
     Json(LlmConfigView {
         protocol: cfg.protocol,
         base_url: cfg.base_url,
         model: cfg.model,
-        has_api_key: has_any_api_key(&cfg),
+        has_api_key: has_key,
     })
 }
 

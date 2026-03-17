@@ -1,6 +1,6 @@
 [package]
 name = "fundsight-desktop"
-version = "0.1.16"
+version = "0.1.17"
 description = "FundSight Desktop"
 authors = ["FundSight"]
 edition = "2021"
