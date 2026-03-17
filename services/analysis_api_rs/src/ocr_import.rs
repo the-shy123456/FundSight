@@ -73,7 +73,7 @@ fn sanitize_search_query(value: &str) -> String {
     let mut text = ellipsis_re.replace_all(value, "").to_string();
 
     // Stop at known separators / columns.
-    for marker in ["持有金额", "持有收益", "¥", "￥"] {
+    for marker in ["持有金额", "持有收益", "¥", "￥", "羊"] {
         if let Some((head, _)) = text.split_once(marker) {
             text = head.to_string();
         }
@@ -87,7 +87,18 @@ fn sanitize_search_query(value: &str) -> String {
 
     // Keep only Chinese (Han) / alpha / digits / parentheses.
     let keep_re = Regex::new(r"[^\p{Han}A-Za-z0-9()]+").unwrap();
-    let clean = keep_re.replace_all(&text, "").to_string();
+    let mut clean = keep_re.replace_all(&text, "").to_string();
+
+    // Common OCR: fund class suffix like "E" / "A" at the end.
+    // If it ends with a single letter and contains Chinese, drop it.
+    if clean.len() >= 4
+        && !clean.ends_with("ETF")
+        && clean.chars().last().is_some_and(|c| c.is_ascii_alphabetic())
+        && clean.chars().rev().nth(1).is_some_and(|c| c.is_alphanumeric() || c.is_ascii())
+        && Regex::new(r"\p{Han}").unwrap().is_match(&clean)
+    {
+        clean.pop();
+    }
 
     clean.chars().take(22).collect()
 }
@@ -509,10 +520,9 @@ fn decode_image_data(image_data: &str) -> Result<(Vec<u8>, String)> {
 async fn ocr_image_file(image_path: &Path) -> Result<OcrPayload> {
     use tokio::process::Command;
 
-    let safe_path = image_path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\"\"");
+    // Use a PowerShell single-quoted literal path; only escape single quote itself.
+    let safe_path = image_path.to_string_lossy().to_string();
+    let safe_path = safe_path.replace('\'', "''");
 
     // Ported from services/analysis_api/ocr_import.py (PowerShell WinRT OCR).
     let script = format!(
@@ -541,7 +551,8 @@ function AwaitResult($AsyncOp, $Type) {{
   $task = $generic.Invoke($null, @($AsyncOp))
   return $task.Result
 }}
-$path = "{path}"
+$path = '{path}'
+if (!(Test-Path -LiteralPath $path)) {{ throw "OCR 输入图片不存在: $path" }}
 $lang = New-Object Windows.Globalization.Language('zh-Hans')
 $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
 if ($null -eq $engine) {{ throw '当前系统不支持中文 OCR' }}
