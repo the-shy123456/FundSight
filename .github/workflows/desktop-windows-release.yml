@@ -65,6 +65,22 @@ jobs:
           npm run tauri build -- --bundles nsis --verbose 2>&1 | Tee-Object -FilePath tauri-build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Annotate failure tail (tauri-build.log)
+        if: failure()
+        working-directory: apps/desktop/app
+        shell: pwsh
+        run: |
+          $logPath = "tauri-build.log"
+          if (!(Test-Path $logPath)) {
+            Write-Output "::error::tauri-build.log not found"
+            exit 0
+          }
+          $n = 120
+          $lines = Get-Content -Path $logPath -Tail $n
+          $joined = ($lines -join "`n")
+          $encoded = $joined.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+          Write-Output "::error::tauri-build.log tail ($n lines):%0A$encoded"
+
       - name: Upload build logs (always)
         if: always()
         uses: actions/upload-artifact@v4
