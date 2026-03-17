@@ -1,4 +1,4 @@
-use crate::{announcements, assistant, funds, holdings, nav, portfolio, real_data, theme, top_holdings, watchlist};
+use crate::{announcements, assistant, funds, holdings, nav, ocr_import, portfolio, real_data, theme, top_holdings, watchlist};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -6,8 +6,6 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -328,112 +326,8 @@ async fn post_holdings_ocr(
         return bad_request("image_base64 不能为空").into_response();
     }
 
-    let b64 = if raw.starts_with("data:") {
-        raw.split_once("base64,").map(|(_, b)| b).unwrap_or("")
-    } else {
-        raw
-    };
-
-    let bytes = match BASE64.decode(b64) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::OK,
-                Json(json!({
-                    "suggestions": [],
-                    "warnings": ["图片解码失败：请重新截图或换一张更清晰的图片。"],
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    // Experimental: allow feeding plain-text CSV as "image" for fast iteration.
-    let text = match String::from_utf8(bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::OK,
-                Json(json!({
-                    "suggestions": [],
-                    "warnings": ["当前版本 OCR 仍在迁移中（Windows 原生 OCR 待接入）。"],
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    if !text.contains(',') {
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "suggestions": [],
-                "warnings": ["当前版本 OCR 仍在迁移中（Windows 原生 OCR 待接入）。"],
-            })),
-        )
-            .into_response();
-    }
-
-    let lots = match holdings::parse_holdings_text(&text) {
-        Ok(v) => v,
-        Err(error) => {
-            return (
-                StatusCode::OK,
-                Json(json!({
-                    "suggestions": [],
-                    "warnings": [format!("OCR 解析失败：{error}")],
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let mut suggestions: Vec<Value> = vec![];
-
-    for lot in lots {
-        let estimate = match real_data::fetch_fund_estimate(&state.http, &lot.fund_id).await {
-            Ok(v) => v,
-            Err(_) => json!({"name": lot.fund_id, "estimated_nav": 0.0, "latest_nav": 0.0}),
-        };
-
-        let name = estimate
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(lot.fund_id.as_str());
-        let nav = estimate
-            .get("estimated_nav")
-            .and_then(|v| v.as_f64())
-            .or_else(|| estimate.get("latest_nav").and_then(|v| v.as_f64()))
-            .unwrap_or(0.0);
-
-        if nav <= 0.0 {
-            continue;
-        }
-
-        let amount = lot.shares * nav;
-        let cost_basis = lot.shares * lot.unit_cost;
-        let profit = amount - cost_basis;
-
-        suggestions.push(json!({
-            "fundQuery": lot.fund_id,
-            "fundName": name,
-            "amount": format!("{:.2}", amount),
-            "profit": format!("{:.2}", profit),
-        }));
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "suggestions": suggestions,
-            "warnings": if suggestions.is_empty() {
-                vec!["未能解析到有效基金行（请检查格式 fund_id,shares,unit_cost）。".to_string()]
-            } else {
-                Vec::<String>::new()
-            },
-        })),
-    )
-        .into_response()
+    let parsed = ocr_import::extract_holdings_from_image_data(&state.http, raw).await;
+    (StatusCode::OK, Json(parsed)).into_response()
 }
 
 async fn post_assistant_ask(

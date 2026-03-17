@@ -6,6 +6,7 @@ pub mod holdings;
 pub mod html;
 pub mod metrics;
 pub mod nav;
+pub mod ocr_import;
 pub mod portfolio;
 pub mod real_data;
 pub mod storage;

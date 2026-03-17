@@ -5,6 +5,75 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub async fn search_funds_basic(client: &Client, query: &str, limit: usize) -> Result<Vec<Value>> {
+    let clean = query.trim();
+    if clean.is_empty() {
+        return Ok(vec![]);
+    }
+
+    if clean.len() == 6 && clean.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(vec![json!({
+            "fund_id": clean,
+            "name": clean,
+            "name_display": clean,
+        })]);
+    }
+
+    let url = format!(
+        "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key={}",
+        urlencoding::encode(clean)
+    );
+
+    let payload: Value = client
+        .get(url)
+        .header("Referer", "https://fund.eastmoney.com/")
+        .send()
+        .await
+        .context("fund search request")?
+        .json()
+        .await
+        .context("fund search json")?;
+
+    let mut results: Vec<Value> = vec![];
+    let mut seen = std::collections::HashSet::new();
+
+    let items = payload
+        .get("Datas")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    for item in items {
+        let code = item
+            .get("CODE")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if seen.contains(code) {
+            continue;
+        }
+        seen.insert(code.to_string());
+        let name = item
+            .get("NAME")
+            .and_then(|v| v.as_str())
+            .unwrap_or(code)
+            .trim();
+        results.push(json!({
+            "fund_id": code,
+            "name": name,
+            "name_display": name,
+        }));
+        if results.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
 pub async fn search_funds(client: &Client, query: &str, limit: usize) -> Result<Vec<Value>> {
     let clean = query.trim();
     if clean.is_empty() {
