@@ -48,6 +48,9 @@ struct OcrPayload {
 fn clean_ocr_line(value: &str) -> String {
     let normalized = value
         .replace('￥', "¥")
+        .replace('，', ",")
+        .replace('（', "(")
+        .replace('）', ")")
         .replace('—', "-")
         .replace('−', "-")
         .replace('．', ".")
@@ -65,25 +68,28 @@ fn contains_blacklist_term(value: &str) -> bool {
 }
 
 fn sanitize_search_query(value: &str) -> String {
-    // drop ellipsis and tailing numeric tokens.
+    // Drop ellipsis and strip obvious numeric columns.
     let ellipsis_re = Regex::new(r"(?:\.\.\.|…)+").unwrap();
     let mut text = ellipsis_re.replace_all(value, "").to_string();
 
-    // Stop at currency / sign / digits.
-    if let Some((head, _)) = text.split_once('¥') {
-        text = head.to_string();
+    // Stop at known separators / columns.
+    for marker in ["持有金额", "持有收益", "¥", "￥"] {
+        if let Some((head, _)) = text.split_once(marker) {
+            text = head.to_string();
+        }
     }
-    // Also stop at first digit or sign.
-    let stop_re = Regex::new(r"[+\-0-9]").unwrap();
-    if let Some(m) = stop_re.find(&text) {
+
+    // Stop at first signed number like +12.34 / -56.78 (profit column).
+    let signed_re = Regex::new(r"[+\-]\d").unwrap();
+    if let Some(m) = signed_re.find(&text) {
         text = text[..m.start()].to_string();
     }
 
-    // Keep only Chinese (Han) / alpha / parentheses.
-    let keep_re = Regex::new(r"[^\p{Han}A-Za-z()]+").unwrap();
+    // Keep only Chinese (Han) / alpha / digits / parentheses.
+    let keep_re = Regex::new(r"[^\p{Han}A-Za-z0-9()]+").unwrap();
     let clean = keep_re.replace_all(&text, "").to_string();
 
-    clean.chars().take(18).collect()
+    clean.chars().take(22).collect()
 }
 
 fn is_fund_title_candidate(value: &str) -> bool {
@@ -108,32 +114,81 @@ fn is_fund_title_candidate(value: &str) -> bool {
     count >= 3
 }
 
-fn extract_amount_value(line: &str) -> String {
-    // prefer currency.
-    let currency_re = Regex::new(r"¥\s*([0-9]+(?:\.[0-9]{1,2})?)").unwrap();
-    if let Some(caps) = currency_re.captures(line) {
-        if let Some(m) = caps.get(1) {
-            if let Ok(v) = m.as_str().parse::<f64>() {
-                return format!("{v:.2}");
-            }
-        }
+fn parse_amount_token(raw: &str, unit: &str) -> Option<f64> {
+    let cleaned = raw.trim().replace(',', "");
+    if cleaned.is_empty() {
+        return None;
     }
+    let mut value: f64 = cleaned.parse().ok()?;
+    if unit.contains('万') {
+        value *= 10000.0;
+    }
+    Some(value)
+}
 
-    // skip returns / pnl lines.
+fn extract_amount_value(line: &str) -> String {
+    // Skip obvious non-amount rows.
     if line.contains('%') || line.starts_with('+') || line.starts_with('-') {
         return "".to_string();
     }
 
-    let unsigned_re = Regex::new(r"([0-9]+(?:\.[0-9]{1,2})?)").unwrap();
-    for m in unsigned_re.find_iter(line) {
-        if let Ok(v) = m.as_str().parse::<f64>() {
-            if v >= 100.0 {
+    // Avoid treating dates/time-only rows as amount anchors.
+    if !Regex::new(r"[\p{Han}A-Za-z]").unwrap().is_match(line) {
+        return "".to_string();
+    }
+
+    // Prefer currency patterns, support comma + 万.
+    let currency_re = Regex::new(r"[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)(万?)").unwrap();
+    if let Some(caps) = currency_re.captures(line) {
+        let number = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        if let Some(v) = parse_amount_token(number, unit) {
+            if v > 0.0 {
                 return format!("{v:.2}");
             }
         }
     }
 
-    "".to_string()
+    // Fallback: scan numbers and pick a reasonable candidate (amount is usually the largest).
+    let token_re = Regex::new(r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)(万?)").unwrap();
+    let mut candidates: Vec<f64> = vec![];
+    for caps in token_re.captures_iter(line) {
+        let raw = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        // Skip likely fund codes (6 digits).
+        if unit.is_empty() && raw.len() == 6 && raw.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(v) = parse_amount_token(raw, unit) {
+            if v > 0.0 {
+                candidates.push(v);
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return "".to_string();
+    }
+
+    // Prefer >= 50, else take the max.
+    let mut preferred: Vec<f64> = candidates.iter().copied().filter(|v| *v >= 50.0).collect();
+    let chosen = if !preferred.is_empty() {
+        preferred
+            .drain(..)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0)
+    } else {
+        candidates
+            .into_iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0)
+    };
+
+    if chosen > 0.0 {
+        format!("{chosen:.2}")
+    } else {
+        "".to_string()
+    }
 }
 
 fn find_amount_indexes(lines: &[String]) -> Vec<usize> {
@@ -464,6 +519,9 @@ $null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, C
 $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapPixelFormat, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapAlphaMode, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapTransform, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.ExifOrientationMode, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.ColorManagementMode, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
 $null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrResult, Windows.Media.Ocr, ContentType=WindowsRuntime]
@@ -483,7 +541,26 @@ if ($null -eq $engine) {{ throw '当前系统不支持中文 OCR' }}
 $file = AwaitResult ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path)) ([Windows.Storage.StorageFile])
 $stream = AwaitResult ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
 $decoder = AwaitResult ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-$bitmap = AwaitResult ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+
+# Upscale small images to improve OCR for phone photos.
+$transform = New-Object Windows.Graphics.Imaging.BitmapTransform
+$w = [uint32]$decoder.PixelWidth
+$h = [uint32]$decoder.PixelHeight
+$scale = 1
+if ($w -lt 1600) { $scale = 2 }
+$scaledW = [uint32]([math]::Min($w * $scale, 4000))
+$scaledH = [uint32]([math]::Min($h * $scale, 4000))
+$transform.ScaledWidth = $scaledW
+$transform.ScaledHeight = $scaledH
+
+$bitmap = AwaitResult ($decoder.GetSoftwareBitmapAsync(
+  [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+  [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied,
+  $transform,
+  [Windows.Graphics.Imaging.ExifOrientationMode]::RespectExifOrientation,
+  [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage
+)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+
 $result = AwaitResult ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
 $lines = @()
 foreach ($line in $result.Lines) {{ $lines += $line.Text }}
